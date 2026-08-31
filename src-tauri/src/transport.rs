@@ -48,6 +48,26 @@ const INPUT_PORT: u16 = 49323; // entrada/control (visor <-> host)
 const MSG_FRAME: u8 = 0x01;
 const MSG_INPUT: u8 = 0x10;
 
+/// Buffer de socket para el canal de VIDEO. Pequeño a propósito: con TCP,
+/// `write_all` no bloquea hasta que el buffer del SO se llena, así que un buffer
+/// grande deja que se apilen 5-10 frames = 1-2 s de retraso. Con ~96 KB solo
+/// caben ~2 frames; en cuanto se llena, el escritor se bloquea, el `FrameQueue`
+/// marca "busy" y el host DESCARTA frames en vez de acumular retraso.
+const VIDEO_SOCK_BUF: usize = 96 * 1024;
+
+/// Acota el retraso de un socket de video: TCP_NODELAY + buffers de envío/recepción
+/// pequeños para que no se acumulen frames en vuelo.
+pub(crate) fn tune_video_socket(stream: &TcpStream, send: bool, recv: bool) {
+    let s = socket2::SockRef::from(stream);
+    let _ = s.set_nodelay(true);
+    if send {
+        let _ = s.set_send_buffer_size(VIDEO_SOCK_BUF);
+    }
+    if recv {
+        let _ = s.set_recv_buffer_size(VIDEO_SOCK_BUF);
+    }
+}
+
 /// H.264 (Media Foundation) da mejor calidad por bit, pero depende de que el MFT
 /// del host codifique sin fallar Y de que el WebView del visor traiga WebCodecs
 /// (`VideoDecoder`). Cualquiera de los dos fallando = pantalla negra silenciosa.
@@ -823,6 +843,10 @@ impl Transport {
         app: &AppHandle,
         capture: &Arc<CaptureEngine>,
     ) {
+        // Acota el retraso del canal de video (LAN directo o loopback del relay):
+        // buffers pequenos => no se apilan frames en vuelo.
+        tune_video_socket(&video_stream, true, true);
+
         // Lee el perfil pedido por el visor (primer mensaje del canal de entrada).
         let profile = negotiate_profile(&mut input_stream);
 
@@ -929,6 +953,10 @@ impl Transport {
         };
         video_stream.set_nodelay(true).map_err(|e| format!("nodelay: {e}"))?;
         input_stream.set_nodelay(true).map_err(|e| format!("nodelay: {e}"))?;
+        // Buffer de recepcion de video pequeno: si el visor se atrasa pintando,
+        // el buffer se llena, TCP frena al host y este descarta frames viejos en
+        // vez de que nos llegue video con segundos de retraso.
+        tune_video_socket(&video_stream, false, true);
 
         let mut input_write = input_stream.try_clone().map_err(|e| format!("clone: {e}"))?;
         let hello = serde_json::json!({ "t": "hello", "profile": profile }).to_string();
@@ -1090,6 +1118,12 @@ fn viewer_video_reader(app: AppHandle, mut stream: TcpStream, running: Arc<Atomi
     let mut frames = 0u32;
     let mut bytes = 0u64;
     let mut window = Instant::now();
+    // Coalescido de emision hacia el WebView: como mucho un frame cada ~14 ms.
+    // Si llegan varios de golpe (rafaga tras un bache de red) se pinta solo el
+    // ultimo -> no se acumula retraso en la cola de eventos. Solo aplica a JPEG
+    // (cada frame es independiente); H.264 nunca se salta (dependencia de keyframe).
+    let mut last_emit = Instant::now() - Duration::from_secs(1);
+    const EMIT_MIN_GAP: Duration = Duration::from_millis(14);
 
     while running.load(Ordering::SeqCst) {
         match read_msg(&mut stream) {
@@ -1105,20 +1139,21 @@ fn viewer_video_reader(app: AppHandle, mut stream: TcpStream, running: Arc<Atomi
                 frames += 1;
                 bytes += data.len() as u64;
 
-                let encoded = b64.encode(data);
-                match codec {
-                    CODEC_H264 => {
+                let is_h264 = codec == CODEC_H264;
+                if is_h264 || last_emit.elapsed() >= EMIT_MIN_GAP {
+                    let encoded = b64.encode(data);
+                    if is_h264 {
                         let _ = app.emit(
                             "remote-frame-h264",
                             serde_json::json!({ "data": encoded, "width": w, "height": h, "keyframe": keyframe }),
                         );
-                    }
-                    _ => {
+                    } else {
                         let _ = app.emit(
                             "remote-frame",
                             serde_json::json!({ "jpeg": encoded, "width": w, "height": h }),
                         );
                     }
+                    last_emit = Instant::now();
                 }
 
                 if window.elapsed() >= Duration::from_millis(500) {

@@ -31,6 +31,15 @@ fn relay_target() -> (String, u16) {
 
 type Tls = rustls::StreamOwned<rustls::ClientConnection, TcpStream>;
 
+/// Buffers de socket pequenos en el puente del relay: igual que en `transport`,
+/// evita que se apilen frames de video en vuelo (retraso de segundos).
+fn tune_relay_socket(stream: &TcpStream) {
+    let s = socket2::SockRef::from(stream);
+    let _ = s.set_nodelay(true);
+    let _ = s.set_send_buffer_size(96 * 1024);
+    let _ = s.set_recv_buffer_size(96 * 1024);
+}
+
 /// Construye la config TLS con las raices publicas (webpki-roots) y el proveedor
 /// criptografico `ring`.
 fn tls_config() -> Arc<rustls::ClientConfig> {
@@ -55,7 +64,7 @@ fn tls_connect(cmd: &str, id: &str) -> io::Result<Tls> {
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("TLS: {e}")))?;
 
     let sock = TcpStream::connect((host.as_str(), port))?;
-    sock.set_nodelay(true).ok();
+    tune_relay_socket(&sock);
     let mut tls = rustls::StreamOwned::new(conn, sock);
     tls.write_all(format!("{cmd} {id}\n").as_bytes())?;
     tls.flush()?;
@@ -136,8 +145,9 @@ fn bridge(tls: Tls) -> io::Result<TcpStream> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let addr = listener.local_addr()?;
     let outer = TcpStream::connect(addr)?; // extremo que se devuelve al llamante
-    outer.set_nodelay(true).ok();
+    tune_relay_socket(&outer);
     let (inner, _) = listener.accept()?; // extremo del puente
+    tune_relay_socket(&inner);
 
     std::thread::Builder::new()
         .name("otis-relay-bridge".into())

@@ -1384,7 +1384,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2",
+ "socket2 0.6.5",
  "tokio",
  "tower-service",
  "tracing",
@@ -2261,7 +2261,7 @@ dependencies = [
 
 [[package]]
 name = "otiscorp-remote"
-version = "2.9.2"
+version = "2.9.3"
 dependencies = [
  "base64 0.22.1",
  "core-foundation",
@@ -2270,6 +2270,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "socket2 0.5.10",
  "sysinfo",
  "tauri",
  "tauri-build",
@@ -3147,6 +3148,16 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
 name = "socket2"
+version = "0.5.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e22376abed350d73dd1cd119b57ffccad95b4e585a7cda43e286245ce23c0678"
+dependencies = [
+ "libc",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "socket2"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
@@ -3801,7 +3812,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
- "socket2",
+ "socket2 0.6.5",
  "windows-sys 0.61.2",
 ]
 

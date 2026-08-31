@@ -1,6 +1,6 @@
 {
   "name": "otiscorp-remote",
-  "version": "2.9.2",
+  "version": "2.9.3",
   "private": true,
   "description": "OtisCorp Remote — cliente de escritorio remoto ligero (Tauri + Rust/windows-rs)",
   "scripts": {

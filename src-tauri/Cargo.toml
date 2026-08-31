@@ -1,6 +1,6 @@
 [package]
 name = "otiscorp-remote"
-version = "2.9.2"
+version = "2.9.3"
 description = "OtisCorp Remote — cliente de escritorio remoto ligero"
 authors = ["OtisCorp"]
 edition = "2021"
@@ -19,6 +19,9 @@ sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 # Codec ligero para compartir pantalla (MJPEG). jpeg-encoder es Rust puro (sin C).
 jpeg-encoder = "0.6"
 base64 = "0.22"
+# Ajuste fino de sockets (SO_SNDBUF/SO_RCVBUF) para acotar el retraso: limita
+# cuantos bytes de video pueden estar "en vuelo" a la vez.
+socket2 = "0.5"
 # TLS para el tunel por internet contra el relay (proveedor `ring`, sin C extra).
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 webpki-roots = "0.26"
