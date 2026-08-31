@@ -14,7 +14,7 @@
     <!-- Barra de titulo -->
     <div class="tbar">
       <span class="tbrand">OTISCORP</span>
-      <span class="tbar-sub">Remote 2.4 · cliente ligero</span>
+      <span class="tbar-sub">Remote 2.6 · cliente ligero</span>
       <div class="wctl">
         <button id="win-min" title="Minimizar">&#8211;</button>
         <button id="win-max" title="Maximizar">&#9633;</button>
@@ -171,22 +171,64 @@
   <!-- Vista de sesion remota (visor): frames + control de raton/teclado -->
   <div class="remote-view hidden" id="remote-view">
     <canvas id="remote-canvas" tabindex="0"></canvas>
-    <!-- Barra de control flotante (diseno #2a) -->
+    <!-- Barra de sesion: toolbar superior de ancho completo, tipo AnyDesk -->
     <div class="session-bar" id="session-bar">
-      <div class="session-bar-row">
-        <span class="session-title" id="session-title">Sesión remota</span>
-        <span class="session-timer num" id="session-timer">00:00</span>
-        <span class="session-metrics num" id="session-metrics">— fps · — ms · — kb/s</span>
-        <div class="session-actions">
-          <button class="btn btn-secondary" id="sb-quality" type="button">Ultraligero</button>
-          <button class="btn btn-secondary" id="sb-input" type="button" title="Bloquear/activar control">Control: on</button>
-          <button class="btn btn-danger" id="sb-end" type="button">Terminar</button>
-        </div>
+      <span class="session-title" id="session-title">Sesión remota</span>
+      <span class="session-timer num" id="session-timer">00:00</span>
+      <span class="session-metrics num" id="session-metrics">— fps · — ms · — kb/s</span>
+      <div class="session-actions">
+        <button class="btn btn-secondary" id="sb-quality" type="button">Ultraligero</button>
+        <button class="btn btn-secondary" id="sb-input" type="button" title="Bloquear/activar control">Control: on</button>
+        <button class="btn btn-secondary" id="sb-fullscreen" type="button" title="Pantalla completa">Pantalla completa</button>
+        <button class="btn btn-secondary" id="sb-screenshot" type="button" title="Guardar una captura del escritorio remoto">Captura</button>
+        <button class="btn btn-secondary" id="sb-cad" type="button" title="Enviar Ctrl+Alt+Supr al equipo remoto">Ctrl+Alt+Supr</button>
+        <button class="btn btn-danger" id="sb-end" type="button">Terminar</button>
+      </div>
+      <div class="wctl session-wctl">
+        <button id="sb-win-min" title="Minimizar">&#8211;</button>
+        <button id="sb-win-max" title="Maximizar">&#9633;</button>
+        <button id="sb-win-close" class="close" title="Cerrar">&#10005;</button>
       </div>
     </div>
   </div>
 
   <div class="toast" id="toast"></div>
+
+  <!-- Overlay de actualizacion: se muestra mientras se descarga e instala una
+       version nueva (la app se reinicia sola al terminar). -->
+  <div class="approval-backdrop hidden" id="update-overlay">
+    <div class="approval-card" style="text-align:center">
+      <div class="loader-bars" style="margin:0 auto 16px"></div>
+      <div class="k" id="update-text">Actualizando…</div>
+    </div>
+  </div>
+
+  <!-- Barra flotante: se muestra en ESTE equipo mientras alguien lo esta
+       controlando, con boton para cortar la sesion desde aca tambien. -->
+  <div class="host-bar hidden" id="host-bar">
+    <span class="dot dot-live"></span>
+    <span id="host-bar-text">Te están controlando</span>
+    <button class="btn btn-danger" id="host-bar-end" type="button">Terminar</button>
+  </div>
+
+  <!-- Dialogo de autorizacion: se muestra en ESTE equipo cuando otro pide
+       conectarse a controlarlo. Sin aceptar aca, nadie entra. -->
+  <div class="approval-backdrop hidden" id="approval-backdrop">
+    <div class="approval-card">
+      <div class="k">Solicitud de conexión</div>
+      <p class="muted" id="approval-text" style="font-size:13px;margin:8px 0 4px">
+        Un equipo quiere conectarse y controlar esta pantalla.
+      </p>
+      <p class="muted" style="font-size:12px;margin:0 0 14px">
+        Se rechaza sola en <span id="approval-countdown">20</span>s si no respondes.
+      </p>
+      <div style="display:flex;gap:10px">
+        <button class="btn btn-primary" id="approval-accept" type="button">Autorizar</button>
+        <button class="btn btn-secondary" id="approval-reject" type="button">Rechazar</button>
+      </div>
+    </div>
+  </div>
+
   <script src="webrtc.js"></script>
   <script src="app.js"></script>
 </body>

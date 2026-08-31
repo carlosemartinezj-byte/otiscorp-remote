@@ -256,6 +256,26 @@ svg { stroke-width: 1.5; stroke: currentColor; fill: none; stroke-linecap: round
 /* ==========================================================================
    Vista de sesion remota (visor) — overlay a pantalla completa
    ========================================================================== */
+/* Loader de barras (variante disponible para pantallas de carga mas grandes) */
+.loader-bars {
+  width: 85px;
+  height: 50px;
+  --g1: conic-gradient(from 90deg at left 3px top 3px, #0000 90deg, var(--color-accent) 0);
+  --g2: conic-gradient(from -90deg at bottom 3px right 3px, #0000 90deg, var(--color-accent) 0);
+  background: var(--g1), var(--g1), var(--g1), var(--g2), var(--g2), var(--g2);
+  background-position: left, center, right;
+  background-repeat: no-repeat;
+  animation: l10 1s infinite alternate;
+}
+@keyframes l10 {
+  0%, 2%   { background-size: 25px 50%, 25px 50%, 25px 50%; }
+  20%      { background-size: 25px 25%, 25px 50%, 25px 50%; }
+  40%      { background-size: 25px 100%, 25px 25%, 25px 50%; }
+  60%      { background-size: 25px 50%, 25px 100%, 25px 25%; }
+  80%      { background-size: 25px 50%, 25px 50%, 25px 100%; }
+  98%, 100% { background-size: 25px 50%, 25px 50%, 25px 50%; }
+}
+
 /* Loader de actividad (conectando / actualizando) */
 .loader {
   display: inline-flex;
@@ -283,6 +303,34 @@ svg { stroke-width: 1.5; stroke: currentColor; fill: none; stroke-linecap: round
   100%   { transform: scaleX(var(--s,1)) translate(0) rotate(90deg); }
 }
 
+/* Barra "te estan controlando" (lado host) */
+.host-bar {
+  position: fixed; top: var(--space-3); left: 50%; transform: translateX(-50%);
+  z-index: 1500; background: var(--color-bg);
+  border: 1px solid var(--color-divider); box-shadow: var(--shadow-lg);
+  padding: 8px 12px; display: flex; align-items: center; gap: 10px;
+  font-size: 12.5px;
+}
+.host-bar.hidden { display: none; }
+.dot-live { background: #c0392b; animation: dotpulse 1.4s infinite; }
+@keyframes dotpulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+/* Dialogo de autorizacion de conexion entrante */
+.approval-backdrop {
+  position: fixed; inset: 0; z-index: 2000;
+  background: color-mix(in srgb, black 45%, transparent);
+  display: flex; align-items: center; justify-content: center;
+}
+.approval-backdrop.hidden { display: none; }
+.approval-card {
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
+  box-shadow: var(--shadow-lg);
+  padding: 22px 24px;
+  min-width: 320px;
+  max-width: 380px;
+}
+
 .remote-view {
   position: fixed; inset: 0; z-index: 1000;
   background: #0a0c0e;
@@ -294,14 +342,14 @@ svg { stroke-width: 1.5; stroke: currentColor; fill: none; stroke-linecap: round
   image-rendering: auto; outline: none; cursor: default;
   background: #0a0c0e;
 }
-/* Barra de control flotante centrada arriba (diseno #2a) */
+/* Barra de sesion: toolbar superior de ancho completo (estilo AnyDesk) */
 .session-bar {
-  position: fixed; top: var(--space-3); left: 50%; transform: translateX(-50%);
+  position: fixed; top: 0; left: 0; right: 0;
   z-index: 1001; background: var(--color-bg);
-  border: 1px solid var(--color-divider); box-shadow: var(--shadow-lg);
+  border-bottom: 1px solid var(--color-divider); box-shadow: var(--shadow-lg);
   padding: var(--space-2) var(--space-3);
+  display: flex; align-items: center; gap: var(--space-3);
 }
-.session-bar-row { display: flex; align-items: center; gap: var(--space-3); }
 .session-title {
   font-family: var(--font-heading); font-weight: var(--font-heading-weight);
   font-size: 14px; color: var(--color-text);
@@ -312,7 +360,10 @@ svg { stroke-width: 1.5; stroke: currentColor; fill: none; stroke-linecap: round
   font-size: 12px; padding-left: var(--space-3);
   border-left: 1px solid var(--color-divider);
 }
-.session-actions { display: flex; align-items: center; gap: var(--space-2); margin-left: var(--space-2); }
+.session-actions { display: flex; align-items: center; gap: var(--space-2); margin-left: auto; }
+.session-wctl { margin-left: var(--space-3); padding-left: var(--space-3); border-left: 1px solid var(--color-divider); }
+/* El lienzo debe dejar espacio para la toolbar fija arriba */
+.remote-view { padding-top: 46px; box-sizing: border-box; }
 .btn-danger {
   background: var(--color-accent-900); color: var(--color-bg);
   border-color: var(--color-accent-900);
@@ -330,6 +381,22 @@ svg { stroke-width: 1.5; stroke: currentColor; fill: none; stroke-linecap: round
   position: relative; border: 1px solid var(--color-divider);
   padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-2);
 }
+.dev-card .dev-thumb {
+  order: -2; aspect-ratio: 16/9; background: #0a0c0e;
+  border: 1px solid var(--color-divider); overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+}
+.dev-card .dev-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.dev-card .dev-thumb-empty {
+  font-size: 11px; color: color-mix(in srgb, var(--color-text) 35%, transparent);
+}
+.dev-card .dev-status {
+  display: flex; align-items: center; gap: 6px; font-size: 11px;
+  color: color-mix(in srgb, var(--color-text) 50%, transparent);
+  order: -1;
+}
+.dev-card .dev-status .dot { background: #2e8b57; }
+.dev-card .dev-status .dot.off { background: var(--color-neutral-400); }
 .dev-card .dev-name {
   font-family: var(--font-heading); font-weight: var(--font-heading-weight);
   font-size: 17px; color: var(--color-text);

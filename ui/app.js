@@ -36,6 +36,82 @@
     toastTimer = setTimeout(() => el.classList.remove("show"), 1600);
   }
 
+  // ---- Autorizacion de conexiones entrantes --------------------------------
+  // Se usa tanto para LAN como para P2P: muestra el dialogo, cuenta 19s y
+  // devuelve una Promise<boolean> con la decision (o rechazo por timeout).
+  const approvalBackdrop = $("approval-backdrop");
+  const approvalText = $("approval-text");
+  const approvalCountdown = $("approval-countdown");
+  let approvalResolve = null;
+  let approvalTimer = null;
+
+  function requestApproval(peerLabel, profile) {
+    return new Promise((resolve) => {
+      // Si ya habia una solicitud pendiente (no deberia pasar, solo 1 a la
+      // vez), la resolvemos como rechazada antes de mostrar la nueva.
+      if (approvalResolve) { approvalResolve(false); }
+      approvalResolve = resolve;
+      approvalText.textContent =
+        `El equipo ${peerLabel} quiere conectarse y controlar esta pantalla` +
+        (profile ? ` (perfil ${PROFILE_LABEL[profile] || profile}).` : ".");
+      let secs = 19;
+      approvalCountdown.textContent = String(secs);
+      approvalBackdrop.classList.remove("hidden");
+      clearInterval(approvalTimer);
+      approvalTimer = setInterval(() => {
+        secs -= 1;
+        approvalCountdown.textContent = String(Math.max(secs, 0));
+        if (secs <= 0) finishApproval(false);
+      }, 1000);
+    });
+  }
+  function finishApproval(accept) {
+    clearInterval(approvalTimer);
+    approvalBackdrop.classList.add("hidden");
+    if (approvalResolve) { approvalResolve(accept); approvalResolve = null; }
+  }
+  $("approval-accept").addEventListener("click", () => finishApproval(true));
+  $("approval-reject").addEventListener("click", () => finishApproval(false));
+
+  // Camino P2P: webrtc.js pide la decision antes de contestar la oferta.
+  if (window.OtisRTC) {
+    OtisRTC.setApprovalHandler((peerId, profile) => requestApproval(groupId(peerId), profile));
+  }
+
+  // Camino LAN: el backend emite el evento y espera el comando de vuelta.
+  listen("incoming-request", (e) => {
+    const { peer, profile } = e.payload || {};
+    requestApproval(peer || "desconocido", profile).then((accept) => {
+      invoke("respond_incoming", { accept });
+    });
+  });
+
+  // ---- Barra "te estan controlando" (lado host, ambos transportes) --------
+  const hostBar = $("host-bar");
+  const hostBarText = $("host-bar-text");
+  let hostBarMode = null; // "lan" | "rtc"
+  function showHostBar(mode, peer) {
+    hostBarMode = mode;
+    hostBarText.textContent = peer ? `Te está controlando ${groupId(peer)}` : "Te están controlando";
+    hostBar.classList.remove("hidden");
+  }
+  function hideHostBar() {
+    hostBarMode = null;
+    hostBar.classList.add("hidden");
+  }
+  listen("incoming-session-started", (e) => showHostBar("lan", (e.payload || {}).peer));
+  listen("incoming-session-ended", () => { if (hostBarMode === "lan") hideHostBar(); });
+  if (window.OtisRTC) {
+    OtisRTC.setHostSessionHandler((active, peer) => {
+      if (active) showHostBar("rtc", peer); else if (hostBarMode === "rtc") hideHostBar();
+    });
+  }
+  $("host-bar-end").addEventListener("click", () => {
+    if (hostBarMode === "lan") invoke("end_incoming_session");
+    else if (hostBarMode === "rtc" && window.OtisRTC) OtisRTC.endHostSession();
+    hideHostBar();
+  });
+
   // ---- Auto-actualizacion (GitHub Releases) --------------------------------
   // Revisa al arrancar; si hay version nueva, la descarga e instala sola y
   // reinicia la app. No requiere accion del usuario.
@@ -44,11 +120,13 @@
     try {
       const update = await updaterApi.check();
       if (!update) return;
-      toast(`Actualizando a la version ${update.version}...`);
+      $("update-text").textContent = `Actualizando a la versión ${update.version}…`;
+      $("update-overlay").classList.remove("hidden");
       await update.downloadAndInstall();
       await processApi.relaunch();
     } catch (_) {
       // Sin internet o sin releases publicados aun: seguimos con la version actual.
+      $("update-overlay").classList.add("hidden");
     }
   }
 
@@ -233,7 +311,7 @@
         try { invoke("disconnect_peer"); } catch (_) {}
       },
     };
-    RemoteSession.open("Sesión · " + groupId(peer), profile, driver);
+    RemoteSession.open("Sesión · " + groupId(peer), profile, driver, peer);
     unlisteners.push(await listen("remote-frame", (e) => {
       const p = e.payload || {};
       if (p.jpeg) RemoteSession.drawJpegB64(p.jpeg, p.width, p.height);
@@ -255,7 +333,7 @@
       sendInput: (ev) => OtisRTC.sendInput(ev),
       close: () => OtisRTC.disconnect(),
     };
-    RemoteSession.open("Sesión · " + groupId(peer), profile, driver);
+    RemoteSession.open("Sesión · " + groupId(peer), profile, driver, peer);
     OtisRTC.connect(peer, profile, {
       onFrame: (bmp) => RemoteSession.drawBitmap(bmp),
       onMetrics: (m) => RemoteSession.setMetrics(m),
@@ -275,14 +353,16 @@
     const img = new Image();
     let active = false, controlOn = true, startTs = 0, timerId = null;
     let driver = null;
+    let sessionPeerId = "";
 
     function fmtTime(ms) {
       const s = Math.floor(ms / 1000);
       return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
     }
 
-    function open(title, profile, drv) {
+    function open(title, profile, drv, peerId) {
       driver = drv;
+      sessionPeerId = peerId || "";
       active = true; controlOn = true;
       view.classList.remove("hidden");
       $("session-title").textContent = title;
@@ -325,11 +405,27 @@
         `${Math.round(m.fps || 0)} fps · ${Math.round(m.latency_ms || 0)} ms · ${Math.round(m.kbps || 0)} kb/s`;
     }
 
-    // Coordenadas normalizadas 0..1 respecto al contenido del canvas.
+    // Coordenadas normalizadas 0..1 respecto al contenido REAL del canvas.
+    // El canvas se escala con object-fit:contain para llenar la ventana sin
+    // deformar la imagen; si la proporcion no coincide exactamente con la del
+    // equipo remoto quedan franjas dentro de la misma caja, y hay que
+    // descontarlas o el mouse se desvia (precision perdida, sobre todo cerca
+    // de los bordes).
     function norm(e) {
       const r = canvas.getBoundingClientRect();
-      const x = (e.clientX - r.left) / r.width;
-      const y = (e.clientY - r.top) / r.height;
+      const iw = canvas.width, ih = canvas.height;
+      if (!iw || !ih || !r.width || !r.height) return { x: 0, y: 0 };
+      const imgAspect = iw / ih, boxAspect = r.width / r.height;
+      let renderW, renderH, offX, offY;
+      if (imgAspect > boxAspect) {
+        renderW = r.width; renderH = r.width / imgAspect;
+        offX = 0; offY = (r.height - renderH) / 2;
+      } else {
+        renderH = r.height; renderW = r.height * imgAspect;
+        offY = 0; offX = (r.width - renderW) / 2;
+      }
+      const x = (e.clientX - r.left - offX) / renderW;
+      const y = (e.clientY - r.top - offY) / renderH;
       return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
     }
     function send(evt) {
@@ -366,13 +462,30 @@
     window.addEventListener("keyup", onKeyUp);
     view.addEventListener("mousedown", () => canvas.focus());
 
+    // Guarda una miniatura (240px de ancho) del ultimo frame visto, para la
+    // tarjeta del dispositivo en la libreta. No es vista en vivo: solo queda
+    // el ultimo estado al cerrar la sesion.
+    function saveThumbnail() {
+      if (!sessionPeerId || !canvas.width || !canvas.height) return;
+      try {
+        const thumbW = 240;
+        const thumbH = Math.round((canvas.height / canvas.width) * thumbW) || 135;
+        const t = document.createElement("canvas");
+        t.width = thumbW; t.height = thumbH;
+        t.getContext("2d").drawImage(canvas, 0, 0, thumbW, thumbH);
+        Devices.saveThumbnail(sessionPeerId, t.toDataURL("image/jpeg", 0.6));
+      } catch (_) { /* canvas vacio o tainted: sin miniatura, no es grave */ }
+    }
+
     function close() {
       if (!active && view.classList.contains("hidden")) return;
+      saveThumbnail();
       active = false;
       clearInterval(timerId);
       if (driver) { try { driver.close(); } catch (_) {} driver = null; }
       view.classList.add("hidden");
       $("conn-status").textContent = "En línea · listo";
+      if (currentWindow) { currentWindow.setFullscreen(false).catch(() => {}); }
     }
 
     $("sb-end").addEventListener("click", close);
@@ -380,6 +493,58 @@
       controlOn = !controlOn;
       $("sb-input").textContent = "Control: " + (controlOn ? "on" : "off");
     });
+
+    // Pantalla completa real (a nivel de SO), como AnyDesk. Se sincroniza si
+    // el usuario sale con Esc (el navegador/OS dispara fullscreenchange).
+    let isFullscreen = false;
+    async function setFullscreen(on) {
+      if (!currentWindow) return;
+      try { await currentWindow.setFullscreen(on); isFullscreen = on; } catch (_) {}
+      $("sb-fullscreen").textContent = on ? "Salir de pantalla completa" : "Pantalla completa";
+    }
+    $("sb-fullscreen").addEventListener("click", () => setFullscreen(!isFullscreen));
+    if (currentWindow) {
+      currentWindow.onResized(() => {
+        if (active) currentWindow.isFullscreen().then((v) => {
+          isFullscreen = v;
+          $("sb-fullscreen").textContent = v ? "Salir de pantalla completa" : "Pantalla completa";
+        }).catch(() => {});
+      });
+    }
+
+    // Captura: guarda el frame actual del escritorio remoto como PNG.
+    $("sb-screenshot").addEventListener("click", () => {
+      try {
+        const a = document.createElement("a");
+        a.href = canvas.toDataURL("image/png");
+        a.download = `otiscorp-captura-${Date.now()}.png`;
+        a.click();
+        toast("Captura guardada");
+      } catch (_) {
+        toast("No se pudo guardar la captura");
+      }
+    });
+
+    // Ctrl+Alt+Supr en el equipo remoto (secuencia keydown en orden, luego keyup en reversa).
+    $("sb-cad").addEventListener("click", () => {
+      if (!controlOn || !active || !driver) return;
+      const seq = [
+        { vk: 0xA2, code: "ControlLeft" },
+        { vk: 0xA4, code: "AltLeft" },
+        { vk: 0x2E, code: "Delete" },
+      ];
+      seq.forEach((k) => send({ t: "key", vk: k.vk, code: k.code, down: true }));
+      seq.slice().reverse().forEach((k) => send({ t: "key", vk: k.vk, code: k.code, down: false }));
+      toast("Ctrl+Alt+Supr enviado");
+    });
+
+    // Controles de la ventana durante la sesion (el titlebar normal queda
+    // tapado por la vista de sesion a pantalla completa).
+    if (currentWindow) {
+      $("sb-win-min").addEventListener("click", () => currentWindow.minimize());
+      $("sb-win-max").addEventListener("click", () => currentWindow.toggleMaximize());
+      $("sb-win-close").addEventListener("click", () => currentWindow.close());
+    }
 
     return { open, close, drawBitmap, drawJpegB64, setMetrics, isActive: () => active };
   })();
@@ -452,8 +617,29 @@
   // ---- Dispositivos guardados (libreta tipo AnyDesk) ----------------------
   // Se persisten en localStorage (sobrevive reinicios). Se guardan solos al
   // conectar y se pueden renombrar/eliminar/añadir a mano.
+  // En linea si responde por LAN (descubrimiento UDP) O esta registrado en el
+  // rendezvous ahora mismo (internet). Cualquiera de los dos alcanza.
+  function checkDeviceOnline(id) {
+    const checks = [invoke("check_online_lan", { peerId: id }).catch(() => false)];
+    if (window.OtisRTC && OtisRTC.isConfigured()) checks.push(OtisRTC.checkPresence(id));
+    return Promise.all(checks).then((results) => results.some(Boolean));
+  }
+
   const Devices = (function () {
     const KEY = "otis_devices";
+    const THUMB_KEY = "otis_thumbs";
+
+    function loadThumbs() {
+      try { return JSON.parse(localStorage.getItem(THUMB_KEY) || "{}"); } catch (_) { return {}; }
+    }
+    function saveThumbnail(id, dataUrl) {
+      id = String(id).replace(/\D/g, "");
+      if (!id) return;
+      const map = loadThumbs();
+      map[id] = dataUrl;
+      try { localStorage.setItem(THUMB_KEY, JSON.stringify(map)); } catch (_) { /* cuota llena: ignorar */ }
+    }
+    function getThumbnail(id) { return loadThumbs()[String(id).replace(/\D/g, "")] || null; }
 
     function load() {
       try { return JSON.parse(localStorage.getItem(KEY) || "[]"); } catch (_) { return []; }
@@ -474,7 +660,12 @@
       }
       save(arr);
     }
-    function remove(id) { save(load().filter((d) => d.id !== id)); }
+    function remove(id) {
+      save(load().filter((d) => d.id !== id));
+      const map = loadThumbs();
+      delete map[id];
+      try { localStorage.setItem(THUMB_KEY, JSON.stringify(map)); } catch (_) {}
+    }
     function rename(id, alias) {
       const arr = load();
       const d = arr.find((x) => x.id === id);
@@ -518,14 +709,23 @@
       list.forEach((d) => {
         const card = document.createElement("div");
         card.className = "blueprint dev-card";
+        const thumb = getThumbnail(d.id);
         card.innerHTML =
           '<i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>' +
+          (thumb
+            ? `<div class="dev-thumb"><img src="${thumb}" alt="" /></div>`
+            : `<div class="dev-thumb dev-thumb-empty">sin captura aún</div>`) +
+          `<div class="dev-status"><span class="dot off"></span><span class="dev-status-text">comprobando…</span></div>` +
           `<div class="dev-name"></div>` +
           `<div class="dev-id num"></div>` +
           `<div class="dev-meta">Perfil: ${PROFILE_LABEL[d.profile] || "Ultraligero"}</div>` +
           `<div class="dev-actions"></div>`;
         card.querySelector(".dev-name").textContent = d.alias;
         card.querySelector(".dev-id").textContent = groupId(d.id);
+        checkDeviceOnline(d.id).then((online) => {
+          card.querySelector(".dev-status .dot").classList.toggle("off", !online);
+          card.querySelector(".dev-status-text").textContent = online ? "en línea" : "desconectado";
+        });
 
         const actions = card.querySelector(".dev-actions");
         const bConn = document.createElement("button");
@@ -547,7 +747,7 @@
 
     function renderAll() { renderQuick(); renderTab(); }
 
-    return { upsert, remove, rename, recent, renderAll, renderQuick, renderTab };
+    return { upsert, remove, rename, recent, renderAll, renderQuick, renderTab, saveThumbnail, getThumbnail };
   })();
 
   // Buscador y alta manual en la pestaña Dispositivos.

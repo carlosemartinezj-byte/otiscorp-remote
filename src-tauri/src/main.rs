@@ -137,6 +137,26 @@ fn disconnect_peer(state: State<AppState>) {
     state.transport.disconnect();
 }
 
+/// Responde a una solicitud de conexion entrante (LAN): true = autorizar.
+#[tauri::command]
+fn respond_incoming(state: State<AppState>, accept: bool) {
+    state.transport.respond_incoming(accept);
+}
+
+/// Corta la sesion entrante activa (LAN) desde el lado que esta siendo
+/// controlado (host).
+#[tauri::command]
+fn end_incoming_session(state: State<AppState>) {
+    state.transport.end_incoming();
+}
+
+/// Comprueba si un ID responde al descubrimiento LAN ahora mismo (estado
+/// en linea/desconectado de la libreta de dispositivos).
+#[tauri::command]
+fn check_online_lan(peer_id: String) -> bool {
+    transport::is_online_lan(&peer_id)
+}
+
 /// Reenvia un evento de entrada (raton/teclado) al equipo remoto.
 #[tauri::command]
 fn send_remote_input(state: State<AppState>, ev: serde_json::Value) {
@@ -233,6 +253,9 @@ fn main() {
             input_text,
             connect_peer,
             disconnect_peer,
+            respond_incoming,
+            end_incoming_session,
+            check_online_lan,
             send_remote_input,
             start_sharing,
             stop_sharing,

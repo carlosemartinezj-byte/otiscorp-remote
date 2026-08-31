@@ -10,6 +10,8 @@
 //   cliente -> servidor  { "type":"signal", "to":"402118553", "data":{...} }
 //   servidor -> destino  { "type":"signal", "from":"731204998", "data":{...} }
 //   servidor -> cliente  { "type":"peer-offline", "to":"402118553" }
+//   cliente -> servidor  { "type":"presence", "id":"402118553" }
+//   servidor -> cliente  { "type":"presence-result", "id":"...", "online":true }
 //   servidor -> cliente  { "type":"error", "message":"..." }
 //
 // `data` es opaco para el servidor: lo definen los clientes (su endpoint público
@@ -82,6 +84,12 @@ wss.on("connection", (ws) => {
         }
         // Reenvía el saludo al destino, etiquetado con quién lo manda.
         send(target, { type: "signal", from: ws.id || null, data: msg.data });
+        break;
+      }
+
+      case "presence": {
+        const id = String(msg.id || "").replace(/\D/g, "");
+        send(ws, { type: "presence-result", id, online: peers.has(id) });
         break;
       }
 

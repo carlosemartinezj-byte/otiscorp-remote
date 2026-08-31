@@ -207,7 +207,11 @@ pub struct Transport {
     self_id: Mutex<String>,
     incoming_active: Arc<AtomicBool>,
     viewer: Mutex<Option<ViewerHandle>>,
+    pending_decision: Mutex<Option<std::sync::mpsc::Sender<bool>>>,
+    incoming_kill: Mutex<Option<TcpStream>>,
 }
+
+const APPROVAL_TIMEOUT: Duration = Duration::from_secs(20);
 
 struct ViewerHandle {
     stream: TcpStream, // handle de escritura (clonado) para reenviar entrada
@@ -220,6 +224,25 @@ impl Transport {
             self_id: Mutex::new(String::new()),
             incoming_active: Arc::new(AtomicBool::new(false)),
             viewer: Mutex::new(None),
+            pending_decision: Mutex::new(None),
+            incoming_kill: Mutex::new(None),
+        }
+    }
+
+    /// Responde a una solicitud entrante pendiente (llamado desde el dialogo
+    /// de aprobacion del frontend). Si no hay ninguna pendiente, no hace nada.
+    pub fn respond_incoming(&self, accept: bool) {
+        if let Some(tx) = self.pending_decision.lock().unwrap().take() {
+            let _ = tx.send(accept);
+        }
+    }
+
+    /// Corta la sesion entrante activa (LAN) desde ESTE equipo (el que esta
+    /// siendo controlado). Cierra el socket, lo que desbloquea la lectura y
+    /// termina el bucle de `handle_incoming` de forma normal.
+    pub fn end_incoming(&self) {
+        if let Some(s) = self.incoming_kill.lock().unwrap().take() {
+            let _ = s.shutdown(std::net::Shutdown::Both);
         }
     }
 
@@ -285,10 +308,35 @@ impl Transport {
         // Lee el perfil pedido por el visor (primer mensaje INPUT con {t:"hello"}).
         let profile = negotiate_profile(&mut read_stream);
 
-        let write_stream = match read_stream.try_clone() {
+        let mut write_stream = match read_stream.try_clone() {
             Ok(s) => s,
             Err(_) => return,
         };
+
+        // Pide autorizacion al usuario de este equipo antes de compartir nada.
+        // Si no responde en 20s, se rechaza sola (evita quedar esperando para
+        // siempre a un usuario que no esta presente).
+        let peer = read_stream
+            .peer_addr()
+            .map(|a| a.ip().to_string())
+            .unwrap_or_default();
+        let (tx, rx) = std::sync::mpsc::channel::<bool>();
+        *self.pending_decision.lock().unwrap() = Some(tx);
+        let _ = app.emit(
+            "incoming-request",
+            serde_json::json!({ "peer": peer, "profile": profile }),
+        );
+        let accepted = rx.recv_timeout(APPROVAL_TIMEOUT).unwrap_or(false);
+        *self.pending_decision.lock().unwrap() = None;
+        let _ = app.emit("incoming-request-resolved", serde_json::json!({ "accepted": accepted }));
+        if !accepted {
+            let _ = write_msg(&mut write_stream, MSG_INPUT, br#"{"t":"rejected"}"#);
+            return;
+        }
+        if let Ok(k) = read_stream.try_clone() {
+            *self.incoming_kill.lock().unwrap() = Some(k);
+        }
+        let _ = app.emit("incoming-session-started", serde_json::json!({ "peer": peer }));
 
         let alive = Arc::new(AtomicBool::new(true));
         let sink = JpegSender {
@@ -324,6 +372,7 @@ impl Transport {
 
         alive.store(false, Ordering::SeqCst);
         capture.stop();
+        *self.incoming_kill.lock().unwrap() = None;
     }
 
     // ---- Lado visor --------------------------------------------------------
@@ -484,13 +533,22 @@ fn viewer_reader(app: AppHandle, mut stream: TcpStream, running: Arc<AtomicBool>
                     window = Instant::now();
                 }
             }
+            Ok((MSG_INPUT, payload)) => {
+                if let Ok(v) = serde_json::from_slice::<Value>(&payload) {
+                    if v.get("t").and_then(|t| t.as_str()) == Some("rejected") {
+                        running.store(false, Ordering::SeqCst);
+                        let _ = app.emit("remote-ended", serde_json::json!({ "reason": "rejected" }));
+                        return;
+                    }
+                }
+            }
             Ok(_) => {}
             Err(_) => break,
         }
     }
 
     running.store(false, Ordering::SeqCst);
-    let _ = app.emit("remote-ended", ());
+    let _ = app.emit("remote-ended", serde_json::json!({ "reason": "closed" }));
 }
 
 // ===========================================================================
@@ -524,6 +582,12 @@ fn discovery_responder(id: String) {
             }
         }
     }
+}
+
+/// Comprueba si un ID responde al descubrimiento LAN ahora mismo (para el
+/// punto de estado de la libreta de dispositivos). No abre sesion.
+pub fn is_online_lan(peer_id: &str) -> bool {
+    resolve_peer(peer_id).is_some()
 }
 
 /// Resuelve un peer: si parece IP, conecta directo; si es un ID, lo busca por

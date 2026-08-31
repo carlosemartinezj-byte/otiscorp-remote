@@ -50,6 +50,20 @@ window.OtisRTC = (function () {
   let viewInput = null;
   let viewCbs = null;
 
+  // Handler de aprobacion (lo fija app.js): recibe (peer, profile) y devuelve
+  // una Promise<boolean> — true si el usuario de ESTE equipo autoriza que lo
+  // controlen. Sin handler, se rechaza por seguridad (nunca auto-aceptar).
+  let approvalHandler = null;
+  function setApprovalHandler(fn) { approvalHandler = fn; }
+  // Notifica a app.js cuando ESTE equipo empieza/termina de ser controlado,
+  // para mostrar/ocultar la barra "te estan controlando · Terminar".
+  let hostSessionCb = null;
+  function setHostSessionHandler(fn) { hostSessionCb = fn; }
+  function endHostSession() {
+    if (hostPc) { try { hostPc.close(); } catch (_) {} }
+    teardownHost();
+  }
+
   function rendezvousUrl() {
     const saved = (localStorage.getItem(LS_KEY) || "").trim();
     return saved || DEFAULT_RENDEZVOUS;
@@ -59,6 +73,27 @@ window.OtisRTC = (function () {
   }
   function isConfigured() {
     return rendezvousUrl().length > 0;
+  }
+
+  // Consulta si un ID esta conectado al rendezvous ahora mismo (para el
+  // punto de estado en la libreta de dispositivos). No abre sesion ninguna.
+  const presenceWaiters = new Map(); // id -> [resolve, ...]
+  function checkPresence(id) {
+    id = String(id || "").replace(/\D/g, "");
+    return new Promise((resolve) => {
+      if (!ws || !wsReady || !id) { resolve(false); return; }
+      const list = presenceWaiters.get(id) || [];
+      list.push(resolve);
+      presenceWaiters.set(id, list);
+      send({ type: "presence", id });
+      setTimeout(() => {
+        const l = presenceWaiters.get(id);
+        if (l && l.includes(resolve)) {
+          resolve(false);
+          presenceWaiters.set(id, l.filter((r) => r !== resolve));
+        }
+      }, 4000);
+    });
   }
 
   // ---- Señalizacion (WebSocket al rendezvous) ------------------------------
@@ -107,6 +142,11 @@ window.OtisRTC = (function () {
       viewCbs.onError && viewCbs.onError("El equipo no está conectado (¿app abierta y con internet?).");
       return;
     }
+    if (msg.type === "presence-result") {
+      const list = presenceWaiters.get(msg.id);
+      if (list) { list.forEach((r) => r(!!msg.online)); presenceWaiters.delete(msg.id); }
+      return;
+    }
     if (msg.type !== "signal") return;
     const from = msg.from;
     const data = msg.data || {};
@@ -121,6 +161,9 @@ window.OtisRTC = (function () {
       if (pc && data.candidate) {
         try { await pc.addIceCandidate(data.candidate); } catch (_) {}
       }
+    } else if (data.kind === "rejected" && viewCbs) {
+      viewCbs.onError && viewCbs.onError("El otro equipo rechazó la conexión.");
+      viewCbs.onClose && viewCbs.onClose();
     }
   }
 
@@ -131,7 +174,18 @@ window.OtisRTC = (function () {
       try { hostPc.close(); } catch (_) {}
       teardownHost();
     }
-    sharingProfile = offer.profile || "ultralight";
+    const profile = offer.profile || "ultralight";
+
+    // Pide autorizacion al usuario de ESTE equipo antes de compartir nada.
+    // Sin handler registrado (no debería pasar) se rechaza por seguridad.
+    const approved = approvalHandler ? await approvalHandler(from, profile) : false;
+    if (!approved) {
+      signalTo(from, { kind: "rejected" });
+      return;
+    }
+
+    sharingProfile = profile;
+    if (hostSessionCb) hostSessionCb(true, from);
     hostPc = new RTCPeerConnection(ICE);
 
     hostPc.onicecandidate = (e) => {
@@ -190,11 +244,13 @@ window.OtisRTC = (function () {
   }
 
   function teardownHost() {
+    const wasActive = !!hostPc;
     try { invoke("stop_sharing"); } catch (_) {}
     if (localFrameUnlisten) { try { localFrameUnlisten(); } catch (_) {} localFrameUnlisten = null; }
     hostFrames = null;
     hostInput = null;
     if (hostPc) { try { hostPc.close(); } catch (_) {} hostPc = null; }
+    if (wasActive && hostSessionCb) hostSessionCb(false, null);
   }
 
   // ---- Rol VISOR: crea la oferta y recibe la pantalla ----------------------
@@ -305,5 +361,9 @@ window.OtisRTC = (function () {
     connect,
     sendInput,
     disconnect,
+    setApprovalHandler,
+    setHostSessionHandler,
+    endHostSession,
+    checkPresence,
   };
 })();
