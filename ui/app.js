@@ -10,6 +10,8 @@
   const invoke = tauri ? tauri.core.invoke : async () => null;
   const listen = tauri ? tauri.event.listen : async () => () => {};
   const currentWindow = tauri ? tauri.window.getCurrentWindow() : null;
+  const updaterApi = tauri ? tauri.updater : null;
+  const processApi = tauri ? tauri.process : null;
 
   const $ = (id) => document.getElementById(id);
 
@@ -32,6 +34,22 @@
     el.classList.add("show");
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => el.classList.remove("show"), 1600);
+  }
+
+  // ---- Auto-actualizacion (GitHub Releases) --------------------------------
+  // Revisa al arrancar; si hay version nueva, la descarga e instala sola y
+  // reinicia la app. No requiere accion del usuario.
+  async function checkForUpdate() {
+    if (!updaterApi || !processApi) return;
+    try {
+      const update = await updaterApi.check();
+      if (!update) return;
+      toast(`Actualizando a la version ${update.version}...`);
+      await update.downloadAndInstall();
+      await processApi.relaunch();
+    } catch (_) {
+      // Sin internet o sin releases publicados aun: seguimos con la version actual.
+    }
   }
 
   // ---- Estado -------------------------------------------------------------
@@ -196,6 +214,7 @@
     Devices.upsert(peer, null, profile);
     Devices.renderAll();
     $("conn-status").textContent = `Conectando a ${groupId(peer)}…`;
+    $("conn-loader").classList.remove("hidden");
     // Por internet (WebRTC) si hay servidor configurado; si no, LAN directo.
     if (window.OtisRTC && OtisRTC.isConfigured()) {
       connectViaRTC(peer, profile);
@@ -222,8 +241,10 @@
     unlisteners.push(await listen("remote-metrics", (e) => RemoteSession.setMetrics(e.payload || {})));
     try {
       await invoke("connect_peer", { peerId: peer, profile });
+      $("conn-loader").classList.add("hidden");
     } catch (e) {
       toast("No se pudo conectar: " + e);
+      $("conn-loader").classList.add("hidden");
       RemoteSession.close();
     }
   }
@@ -238,9 +259,9 @@
     OtisRTC.connect(peer, profile, {
       onFrame: (bmp) => RemoteSession.drawBitmap(bmp),
       onMetrics: (m) => RemoteSession.setMetrics(m),
-      onOpen: () => { $("conn-status").textContent = "Conectado (P2P)"; },
-      onClose: () => RemoteSession.close(),
-      onError: (msg) => { toast(msg); RemoteSession.close(); },
+      onOpen: () => { $("conn-status").textContent = "Conectado (P2P)"; $("conn-loader").classList.add("hidden"); },
+      onClose: () => { $("conn-loader").classList.add("hidden"); RemoteSession.close(); },
+      onError: (msg) => { $("conn-loader").classList.add("hidden"); toast(msg); RemoteSession.close(); },
     });
   }
 
@@ -614,6 +635,7 @@
 
   // ---- Arranque -----------------------------------------------------------
   bootstrap();
+  checkForUpdate();
   refreshMetrics();
   Devices.renderAll();
   updateNetModeLabel();
