@@ -1,6 +1,6 @@
 [package]
 name = "otiscorp-remote"
-version = "2.7.0"
+version = "2.8.0"
 description = "OtisCorp Remote — cliente de escritorio remoto ligero"
 authors = ["OtisCorp"]
 edition = "2021"
