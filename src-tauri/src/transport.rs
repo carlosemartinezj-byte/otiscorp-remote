@@ -78,6 +78,21 @@ const USE_H264: bool = false;
 // Codec del payload de un MSG_FRAME (primer byte).
 const CODEC_JPEG: u8 = 0;
 const CODEC_H264: u8 = 1;
+/// JPEG por celdas: en vez de re-mandar la pantalla entera cada frame, solo las
+/// celdas de una rejilla que han cambiado (DXGI nos da las "dirty rects"). Un
+/// frame de "escribiendo en el editor" pasa de ~250 KB a ~3 KB -> nitidez
+/// completa Y fluidez por el relay. Cada ~2 s (o al cambiar de resolucion) se
+/// manda una celda unica con la pantalla entera = keyframe, para recuperar.
+/// Body: [n:u16 BE] + n x [x:u16][y:u16][w:u16][h:u16][len:u32 BE][jpeg...]
+const CODEC_JPEG_TILES: u8 = 2;
+
+/// Lado de la celda de la rejilla de cambios, en pixeles.
+const TILE_SIZE: u32 = 160;
+/// Cada cuanto se manda un frame completo (keyframe) aunque no toque.
+const TILES_KEYFRAME_EVERY: Duration = Duration::from_millis(2000);
+/// Si cambia mas de este % de la pantalla, sale mas barato mandar un keyframe
+/// que muchas celdas sueltas.
+const TILES_KEYFRAME_PCT: u32 = 55;
 
 // ---- Framing por mensajes: [u8 tipo][u32 be longitud][payload] -------------
 
@@ -121,14 +136,14 @@ struct JpegQuality {
 
 fn jpeg_quality_for(profile: &str) -> JpegQuality {
     match profile {
-        // Nitido: resolucion completa. Solo recomendable en LAN o subida buena.
-        "sharp" => JpegQuality { jpeg: 72, scale: 1, min_interval: Duration::from_millis(33) },
-        // Equilibrado (por defecto): MEDIA resolucion. 1/4 de pixeles => JPEG
-        // ~4x mas pequeno, codifica ~4x mas rapido, 1/4 de ancho de banda. Es
-        // el salto grande de fluidez por el relay.
-        "balanced" => JpegQuality { jpeg: 60, scale: 2, min_interval: Duration::from_millis(33) },
-        // Ultraligero: 1/3 de resolucion. Para enlaces flojos / CPUs de gama baja.
-        _ => JpegQuality { jpeg: 52, scale: 3, min_interval: Duration::from_millis(40) },
+        // Con envio por celdas, la resolucion completa ya sale barata: solo se
+        // manda lo que cambia. "Nitido" y "Equilibrado" van los dos a resolucion
+        // nativa y se diferencian en la calidad del JPEG.
+        "sharp" => JpegQuality { jpeg: 80, scale: 1, min_interval: Duration::from_millis(25) },
+        "balanced" => JpegQuality { jpeg: 68, scale: 1, min_interval: Duration::from_millis(30) },
+        // Ultraligero: media resolucion (sigue el camino de frame completo, sin
+        // celdas). Para enlaces muy flojos / CPUs muy justas.
+        _ => JpegQuality { jpeg: 58, scale: 2, min_interval: Duration::from_millis(40) },
     }
 }
 
@@ -178,12 +193,35 @@ fn downscale_into(src: &[u8], w: u32, h: u32, scale: u32, out: &mut Vec<u8>) -> 
 // directo en el socket, asi que la captura se quedaba parada ~1 frame entero
 // esperando a que el JPEG cruzara el relay -> 3 fps.
 
+/// Anexa un bloque de celda al body: [x:u16][y:u16][w:u16][h:u16][len:u32][jpeg].
+fn push_tile(out: &mut Vec<u8>, x: u16, y: u16, w: u16, h: u16, jpeg: &[u8]) {
+    out.extend_from_slice(&x.to_be_bytes());
+    out.extend_from_slice(&y.to_be_bytes());
+    out.extend_from_slice(&w.to_be_bytes());
+    out.extend_from_slice(&h.to_be_bytes());
+    out.extend_from_slice(&(jpeg.len() as u32).to_be_bytes());
+    out.extend_from_slice(jpeg);
+}
+
 struct JpegSender {
     queue: Arc<FrameQueue>,
     alive: Arc<AtomicBool>,
     quality: JpegQuality,
     last_sent: Instant,
+    last_keyframe: Instant,
+    // Dimensiones del ultimo frame visto (para detectar cambio de resolucion).
+    fw: u32,
+    fh: u32,
+    // Rejilla de celdas cambiadas, ACUMULADA entre frames que se saltan: si nos
+    // saltamos un envio (pacing / red ocupada) los cambios de ese frame no se
+    // pierden, quedan marcados aqui hasta el siguiente envio real.
+    grid_cols: u32,
+    grid_rows: u32,
+    cells: Vec<bool>,
+    cells_dirty: bool,
+    // Scratch reutilizado entre frames.
     scaled: Vec<u8>,
+    tile_bgra: Vec<u8>,
     enc_buf: Vec<u8>,
 }
 
@@ -196,49 +234,202 @@ impl JpegSender {
             alive,
             quality,
             last_sent: Instant::now() - Duration::from_secs(1),
+            last_keyframe: Instant::now() - Duration::from_secs(60),
+            fw: 0,
+            fh: 0,
+            grid_cols: 0,
+            grid_rows: 0,
+            cells: Vec::new(),
+            cells_dirty: false,
             scaled: Vec::new(),
+            tile_bgra: Vec::new(),
             enc_buf: Vec::new(),
         }
+    }
+
+    /// Codifica `bgra` (w x h) a JPEG 4:2:0 en `self.enc_buf`. `true` si ok.
+    fn encode_into_buf(&mut self, w: u32, h: u32, bgra: &[u8]) -> bool {
+        self.enc_buf.clear();
+        let mut enc = jpeg_encoder::Encoder::new(&mut self.enc_buf, self.quality.jpeg);
+        enc.set_sampling_factor(jpeg_encoder::SamplingFactor::F_2_2);
+        enc.encode(bgra, w as u16, h as u16, jpeg_encoder::ColorType::Bgra)
+            .is_ok()
+    }
+
+    /// Marca en la rejilla las celdas que toca el rect (x, y, w, h).
+    fn mark_cells(&mut self, x: u32, y: u32, w: u32, h: u32) {
+        if w == 0 || h == 0 || self.grid_cols == 0 {
+            return;
+        }
+        let x1 = (x + w).min(self.fw);
+        let y1 = (y + h).min(self.fh);
+        if x1 <= x || y1 <= y {
+            return;
+        }
+        let cx0 = x / TILE_SIZE;
+        let cy0 = y / TILE_SIZE;
+        let cx1 = ((x1 - 1) / TILE_SIZE).min(self.grid_cols - 1);
+        let cy1 = ((y1 - 1) / TILE_SIZE).min(self.grid_rows - 1);
+        for cy in cy0..=cy1 {
+            for cx in cx0..=cx1 {
+                self.cells[(cy * self.grid_cols + cx) as usize] = true;
+            }
+        }
+        self.cells_dirty = true;
     }
 }
 
 impl FrameSink for JpegSender {
-    fn on_frame(&mut self, width: u32, height: u32, bgra: &[u8], _dirty: &[(u32, u32, u32, u32)]) {
+    fn on_frame(&mut self, width: u32, height: u32, bgra: &[u8], dirty: &[(u32, u32, u32, u32)]) {
         if !self.alive.load(Ordering::SeqCst) {
-            return;
-        }
-        if self.last_sent.elapsed() < self.quality.min_interval {
             return;
         }
         if bgra.len() < (width as usize * height as usize * 4) {
             return;
         }
-        // El escritor todavia no ha vaciado el hueco: la red va detras. Saltamos
-        // ESTE frame sin ni siquiera codificarlo (ahorra CPU); el siguiente que
-        // pillemos ya sera mas nuevo.
-        if self.queue.is_busy() {
+
+        // ---- Ultraligero: frame completo a media resolucion, sin celdas ----
+        if self.quality.scale > 1 {
+            if self.last_sent.elapsed() < self.quality.min_interval || self.queue.is_busy() {
+                return;
+            }
+            let (sw, sh) =
+                downscale_into(bgra, width, height, self.quality.scale, &mut self.scaled);
+            let scaled = std::mem::take(&mut self.scaled);
+            let ok = self.encode_into_buf(sw, sh, &scaled);
+            self.scaled = scaled;
+            if !ok {
+                return;
+            }
+            let payload = build_frame_payload(CODEC_JPEG, true, sw, sh, &self.enc_buf);
+            self.queue.push(payload);
+            self.last_sent = Instant::now();
             return;
         }
 
-        let (sw, sh, data): (u32, u32, &[u8]) = if self.quality.scale <= 1 {
-            (width, height, bgra)
+        // ---- Nitido / Equilibrado: resolucion nativa, solo celdas cambiadas ----
+        let sw = width;
+        let sh = height;
+
+        // (Re)dimensionar la rejilla si cambio la resolucion -> fuerza keyframe.
+        let mut force_keyframe = false;
+        if self.fw != sw || self.fh != sh {
+            self.fw = sw;
+            self.fh = sh;
+            self.grid_cols = (sw + TILE_SIZE - 1) / TILE_SIZE;
+            self.grid_rows = (sh + TILE_SIZE - 1) / TILE_SIZE;
+            self.cells = vec![false; (self.grid_cols * self.grid_rows) as usize];
+            self.cells_dirty = false;
+            force_keyframe = true;
+        }
+
+        // Acumular las dirty rects de ESTE frame en la rejilla.
+        if dirty.is_empty() {
+            force_keyframe = true;
         } else {
-            let (sw, sh) = downscale_into(bgra, width, height, self.quality.scale, &mut self.scaled);
-            (sw, sh, &self.scaled[..])
-        };
+            for &(rx, ry, rw, rh) in dirty {
+                self.mark_cells(rx, ry, rw, rh);
+            }
+        }
 
-        self.enc_buf.clear();
-        let encoder = jpeg_encoder::Encoder::new(&mut self.enc_buf, self.quality.jpeg);
-        if encoder
-            .encode(data, sw as u16, sh as u16, jpeg_encoder::ColorType::Bgra)
-            .is_err()
-        {
+        // Pacing + backpressure: si no toca por tiempo o la red va ocupada, los
+        // cambios quedan marcados y volvemos sin enviar.
+        let keyframe_due = self.last_keyframe.elapsed() >= TILES_KEYFRAME_EVERY;
+        if !force_keyframe {
+            if self.queue.is_busy() {
+                return;
+            }
+            if self.last_sent.elapsed() < self.quality.min_interval {
+                return;
+            }
+            if !self.cells_dirty && !keyframe_due {
+                return; // nada nuevo que mandar
+            }
+        } else if self.queue.is_busy() {
             return;
         }
 
-        let payload = build_frame_payload(CODEC_JPEG, true, sw, sh, &self.enc_buf);
+        let ncells = (self.grid_cols * self.grid_rows) as usize;
+        let ndirty = self.cells.iter().filter(|&&b| b).count();
+        let keyframe = force_keyframe
+            || keyframe_due
+            || (ndirty as u32) * 100 >= (ncells as u32) * TILES_KEYFRAME_PCT;
+
+        let mut body: Vec<u8> = Vec::new();
+        let mut n: u16 = 0;
+
+        if keyframe {
+            if !self.encode_into_buf(sw, sh, bgra) {
+                return;
+            }
+            push_tile(&mut body, 0, 0, sw as u16, sh as u16, &self.enc_buf);
+            n = 1;
+            self.last_keyframe = Instant::now();
+        } else {
+            let cols = self.grid_cols;
+            let rows = self.grid_rows;
+            for cy in 0..rows {
+                let mut cx = 0u32;
+                while cx < cols {
+                    if !self.cells[(cy * cols + cx) as usize] {
+                        cx += 1;
+                        continue;
+                    }
+                    // Fusiona celdas contiguas de la fila en un tile mas ancho
+                    // (ahorra cabeceras JPEG).
+                    let run_start = cx;
+                    while cx < cols && self.cells[(cy * cols + cx) as usize] {
+                        cx += 1;
+                    }
+                    let px = run_start * TILE_SIZE;
+                    let py = cy * TILE_SIZE;
+                    let pw = (cx * TILE_SIZE).min(sw) - px;
+                    let ph = ((cy + 1) * TILE_SIZE).min(sh) - py;
+
+                    let need = (pw as usize) * (ph as usize) * 4;
+                    if self.tile_bgra.len() < need {
+                        self.tile_bgra.resize(need, 0);
+                    }
+                    let row_bytes = (pw as usize) * 4;
+                    for row in 0..ph as usize {
+                        let s = ((py as usize + row) * (sw as usize) + px as usize) * 4;
+                        let d = row * row_bytes;
+                        self.tile_bgra[d..d + row_bytes]
+                            .copy_from_slice(&bgra[s..s + row_bytes]);
+                    }
+
+                    let tile = std::mem::take(&mut self.tile_bgra);
+                    let ok = self.encode_into_buf(pw, ph, &tile[..need]);
+                    self.tile_bgra = tile;
+                    if ok {
+                        push_tile(
+                            &mut body,
+                            px as u16,
+                            py as u16,
+                            pw as u16,
+                            ph as u16,
+                            &self.enc_buf,
+                        );
+                        n += 1;
+                    }
+                }
+            }
+            if n == 0 {
+                return;
+            }
+        }
+
+        let mut framed = Vec::with_capacity(2 + body.len());
+        framed.extend_from_slice(&n.to_be_bytes());
+        framed.extend_from_slice(&body);
+        let payload = build_frame_payload(CODEC_JPEG_TILES, keyframe, sw, sh, &framed);
         self.queue.push(payload);
         self.last_sent = Instant::now();
+
+        for b in self.cells.iter_mut() {
+            *b = false;
+        }
+        self.cells_dirty = false;
     }
 }
 
@@ -1139,19 +1330,31 @@ fn viewer_video_reader(app: AppHandle, mut stream: TcpStream, running: Arc<Atomi
                 frames += 1;
                 bytes += data.len() as u64;
 
-                let is_h264 = codec == CODEC_H264;
-                if is_h264 || last_emit.elapsed() >= EMIT_MIN_GAP {
+                // Solo se puede COALESCAR (saltar) un frame JPEG completo: es
+                // autonomo. H.264 y JPEG-por-celdas son incrementales -> siempre
+                // se emiten o el visor se queda con trozos viejos.
+                let coalescable = codec == CODEC_JPEG;
+                if !coalescable || last_emit.elapsed() >= EMIT_MIN_GAP {
                     let encoded = b64.encode(data);
-                    if is_h264 {
-                        let _ = app.emit(
-                            "remote-frame-h264",
-                            serde_json::json!({ "data": encoded, "width": w, "height": h, "keyframe": keyframe }),
-                        );
-                    } else {
-                        let _ = app.emit(
-                            "remote-frame",
-                            serde_json::json!({ "jpeg": encoded, "width": w, "height": h }),
-                        );
+                    match codec {
+                        CODEC_H264 => {
+                            let _ = app.emit(
+                                "remote-frame-h264",
+                                serde_json::json!({ "data": encoded, "width": w, "height": h, "keyframe": keyframe }),
+                            );
+                        }
+                        CODEC_JPEG_TILES => {
+                            let _ = app.emit(
+                                "remote-frame-tiles",
+                                serde_json::json!({ "data": encoded, "width": w, "height": h, "keyframe": keyframe }),
+                            );
+                        }
+                        _ => {
+                            let _ = app.emit(
+                                "remote-frame",
+                                serde_json::json!({ "jpeg": encoded, "width": w, "height": h }),
+                            );
+                        }
                     }
                     last_emit = Instant::now();
                 }

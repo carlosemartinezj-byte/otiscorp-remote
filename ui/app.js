@@ -334,10 +334,15 @@
       const p = e.payload || {};
       if (p.data) RemoteSession.drawH264(p.data, p.width, p.height, !!p.keyframe);
     }));
-    // Camino MJPEG (fallback: el host no tenia ningun encoder H.264 disponible).
+    // Camino MJPEG frame completo (Ultraligero, o fallback).
     unlisteners.push(await listen("remote-frame", (e) => {
       const p = e.payload || {};
       if (p.jpeg) RemoteSession.drawJpegB64(p.jpeg, p.width, p.height);
+    }));
+    // Camino JPEG por celdas (Nítido / Equilibrado): solo trozos que cambiaron.
+    unlisteners.push(await listen("remote-frame-tiles", (e) => {
+      const p = e.payload || {};
+      if (p.data) RemoteSession.drawJpegTiles(p.data, p.width, p.height, !!p.keyframe);
     }));
     unlisteners.push(await listen("remote-metrics", (e) => RemoteSession.setMetrics(e.payload || {})));
     // El backend avisa cuando la sesion termina (host rechazo, relay/peer cerro…).
@@ -483,6 +488,7 @@
       driver = drv;
       sessionPeerId = peerId || "";
       active = true; controlOn = true;
+      tilesInFlight = false; tilesPending = null; jpegDecoding = false;
       view.classList.remove("hidden");
       $("session-title").textContent = title;
       $("sb-quality").textContent = PROFILE_LABEL[profile] || "Ultraligero";
@@ -533,6 +539,53 @@
         // frame corrupto: lo saltamos, el siguiente repinta
       }
       jpegDecoding = false;
+    }
+
+    // Pinta un frame por CELDAS (CODEC_JPEG_TILES, perfiles Nítido/Equilibrado).
+    // El lienzo es PERSISTENTE: solo se repintan los trozos que cambiaron. En un
+    // keyframe llega una sola celda con la pantalla entera. Los frames de celdas
+    // son incrementales -> no se descartan; si uno llega mientras se pinta el
+    // anterior, se guarda el ÚLTIMO y se procesa al terminar.
+    let tilesInFlight = false, tilesPending = null;
+    function drawJpegTiles(b64, fullW, fullH, keyframe) {
+      if (!active) return;
+      if (tilesInFlight) { tilesPending = [b64, fullW, fullH, keyframe]; return; }
+      tilesInFlight = true;
+      paintTiles(b64, fullW, fullH, keyframe).catch(() => {}).then(() => {
+        tilesInFlight = false;
+        const p = tilesPending;
+        if (p) { tilesPending = null; drawJpegTiles(p[0], p[1], p[2], p[3]); }
+      });
+    }
+    async function paintTiles(b64, fullW, fullH, keyframe) {
+      const bin = atob(b64);
+      const u8 = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      const dv = new DataView(u8.buffer);
+      let off = 0;
+      const n = dv.getUint16(off); off += 2;
+      const jobs = [];
+      for (let i = 0; i < n; i++) {
+        const x = dv.getUint16(off); off += 2;
+        const y = dv.getUint16(off); off += 2;
+        dv.getUint16(off); off += 2; // w (implícito en el bitmap)
+        dv.getUint16(off); off += 2; // h
+        const len = dv.getUint32(off); off += 4;
+        const jpg = u8.subarray(off, off + len); off += len;
+        jobs.push(createImageBitmap(new Blob([jpg], { type: "image/jpeg" })).then(
+          (bmp) => ({ bmp, x, y }), () => null
+        ));
+      }
+      const parts = await Promise.all(jobs);
+      if (!active) { parts.forEach((p) => p && p.bmp.close && p.bmp.close()); return; }
+      if (keyframe && fullW && fullH && (canvas.width !== fullW || canvas.height !== fullH)) {
+        canvas.width = fullW; canvas.height = fullH;
+      }
+      for (const p of parts) {
+        if (!p) continue;
+        ctx.drawImage(p.bmp, p.x, p.y);
+        if (p.bmp.close) p.bmp.close();
+      }
     }
 
     function setMetrics(m) {
@@ -704,7 +757,7 @@
       $("sb-win-close").addEventListener("click", () => currentWindow.close());
     }
 
-    return { open, close, drawBitmap, drawJpegB64, drawH264, setMetrics, isActive: () => active };
+    return { open, close, drawBitmap, drawJpegB64, drawJpegTiles, drawH264, setMetrics, isActive: () => active };
   })();
 
   // Mapea un KeyboardEvent del navegador a un codigo de tecla virtual de Windows.
