@@ -295,8 +295,14 @@
     Devices.renderAll();
     $("conn-status").textContent = `Conectando a ${groupId(peer)}…`;
     $("conn-loader").classList.remove("hidden");
-    // Por internet (WebRTC) si hay servidor configurado; si no, LAN directo.
-    if (window.OtisRTC && OtisRTC.isConfigured()) {
+    // Transporte por defecto: NATIVO del backend — descubrimiento LAN si el
+    // equipo esta en la misma red, o tunel TCP por el relay
+    // (otiscorp-relay.fly.dev:443, TLS saliente) si no. Cruza cualquier
+    // NAT/firewall sin STUN ni TURN ni hole-punching; es TCP fiable y ordenado.
+    // WebRTC P2P queda como opcion avanzada (localStorage otis_force_webrtc="1").
+    let forceRtc = false;
+    try { forceRtc = localStorage.getItem("otis_force_webrtc") === "1"; } catch (_) {}
+    if (forceRtc && window.OtisRTC && OtisRTC.isConfigured()) {
       connectViaRTC(peer, profile);
     } else {
       connectViaLan(peer, profile);
@@ -325,8 +331,22 @@
       if (p.jpeg) RemoteSession.drawJpegB64(p.jpeg, p.width, p.height);
     }));
     unlisteners.push(await listen("remote-metrics", (e) => RemoteSession.setMetrics(e.payload || {})));
+    // El backend avisa cuando la sesion termina (host rechazo, relay/peer cerro…).
+    // Solo actuamos si la sesion seguia viva: al pulsar "Terminar" ya se cierra
+    // sola y este evento llega despues (evita un toast redundante).
+    unlisteners.push(await listen("remote-ended", (e) => {
+      if (!RemoteSession.isActive()) return;
+      const reason = (e.payload || {}).reason || "";
+      toast(reason === "rejected"
+        ? "El otro equipo rechazó la conexión."
+        : "Sesión finalizada" + (reason ? " (" + reason + ")" : "") + ".");
+      $("conn-loader").classList.add("hidden");
+      RemoteSession.close();
+    }));
     try {
+      $("conn-status").textContent = `Conectando a ${groupId(peer)}… (LAN o relay)`;
       await invoke("connect_peer", { peerId: peer, profile });
+      $("conn-status").textContent = "Conectado · esperando autorización del otro equipo…";
       $("conn-loader").classList.add("hidden");
     } catch (e) {
       toast("No se pudo conectar: " + e);

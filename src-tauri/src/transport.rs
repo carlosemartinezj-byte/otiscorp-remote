@@ -48,6 +48,13 @@ const INPUT_PORT: u16 = 49323; // entrada/control (visor <-> host)
 const MSG_FRAME: u8 = 0x01;
 const MSG_INPUT: u8 = 0x10;
 
+/// H.264 (Media Foundation) da mejor calidad por bit, pero depende de que el MFT
+/// del host codifique sin fallar Y de que el WebView del visor traiga WebCodecs
+/// (`VideoDecoder`). Cualquiera de los dos fallando = pantalla negra silenciosa.
+/// Mientras se estabiliza, el transporte usa **MJPEG**: simple, sin dependencias
+/// del visor, a prueba de todo. Poner a `true` para volver a intentar H.264.
+const USE_H264: bool = false;
+
 // Codec del payload de un MSG_FRAME (primer byte).
 const CODEC_JPEG: u8 = 0;
 const CODEC_H264: u8 = 1;
@@ -504,7 +511,7 @@ fn make_video_sink(
 ) -> Box<dyn FrameSink> {
     #[cfg(windows)]
     {
-        if crate::h264enc::is_available() {
+        if USE_H264 && crate::h264enc::is_available() {
             return Box::new(H264Sender::new(stream, profile, alive, force_keyframe));
         }
     }
@@ -1172,14 +1179,16 @@ fn resolve_peer(peer_id: &str) -> Option<SocketAddr> {
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
     socket.set_broadcast(true).ok()?;
     socket
-        .set_read_timeout(Some(Duration::from_millis(700)))
+        .set_read_timeout(Some(Duration::from_millis(450)))
         .ok()?;
     let query = format!("OTIS?{id}");
     let bcast = SocketAddr::from((Ipv4Addr::BROADCAST, DISCOVERY_PORT));
 
     let mut buf = [0u8; 256];
-    // Varios intentos (los broadcast se pierden a veces).
-    for _ in 0..6 {
+    // Varios intentos (los broadcast se pierden a veces). Pocos y cortos: si el
+    // equipo no esta en la LAN, no queremos que el usuario espere 4 s antes de
+    // que la conexion pase al relay por internet.
+    for _ in 0..3 {
         if socket.send_to(query.as_bytes(), bcast).is_err() {
             continue;
         }
