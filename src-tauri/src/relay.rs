@@ -33,11 +33,21 @@ type Tls = rustls::StreamOwned<rustls::ClientConnection, TcpStream>;
 
 /// Buffers de socket pequenos en el puente del relay: igual que en `transport`,
 /// evita que se apilen frames de video en vuelo (retraso de segundos).
+///
+/// Ademas KEEPALIVE TCP: si la conexion al relay se queda "medio muerta" (Fly
+/// reinicia, corte de red), el host esta bloqueado en `host_tunnel` esperando
+/// "PEER" para siempre y el relay ya no lo tiene registrado -> el visor recibe
+/// NOHOST. Con keepalive el SO sondea cada pocos segundos y la lectura falla en
+/// ~30 s, asi `relay_host_loop` reconecta y se vuelve a registrar solo.
 fn tune_relay_socket(stream: &TcpStream) {
     let s = socket2::SockRef::from(stream);
     let _ = s.set_nodelay(true);
     let _ = s.set_send_buffer_size(96 * 1024);
     let _ = s.set_recv_buffer_size(96 * 1024);
+    let ka = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(15))
+        .with_interval(Duration::from_secs(5));
+    let _ = s.set_tcp_keepalive(&ka);
 }
 
 /// Construye la config TLS con las raices publicas (webpki-roots) y el proveedor

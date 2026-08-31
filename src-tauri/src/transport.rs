@@ -66,6 +66,12 @@ pub(crate) fn tune_video_socket(stream: &TcpStream, send: bool, recv: bool) {
     if recv {
         let _ = s.set_recv_buffer_size(VIDEO_SOCK_BUF);
     }
+    // Keepalive: detecta al otro extremo caido/inalcanzable en ~30 s en vez de
+    // quedar la sesion colgada indefinidamente.
+    let ka = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(15))
+        .with_interval(Duration::from_secs(5));
+    let _ = s.set_tcp_keepalive(&ka);
 }
 
 /// H.264 (Media Foundation) da mejor calidad por bit, pero depende de que el MFT
