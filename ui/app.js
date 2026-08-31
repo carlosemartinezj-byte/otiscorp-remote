@@ -312,6 +312,12 @@
       },
     };
     RemoteSession.open("Sesión · " + groupId(peer), profile, driver, peer);
+    // Camino H.264 (el normal: hardware/software segun el equipo host).
+    unlisteners.push(await listen("remote-frame-h264", (e) => {
+      const p = e.payload || {};
+      if (p.data) RemoteSession.drawH264(p.data, p.width, p.height, !!p.keyframe);
+    }));
+    // Camino MJPEG (fallback: el host no tenia ningun encoder H.264 disponible).
     unlisteners.push(await listen("remote-frame", (e) => {
       const p = e.payload || {};
       if (p.jpeg) RemoteSession.drawJpegB64(p.jpeg, p.width, p.height);
@@ -354,6 +360,85 @@
     let active = false, controlOn = true, startTs = 0, timerId = null;
     let driver = null;
     let sessionPeerId = "";
+
+    // ---- Decodificador H.264 (WebCodecs) para el camino LAN/internet por TCP.
+    // El backend manda Annex B (start codes, SPS/PPS delante de cada keyframe);
+    // WebCodecs lo entiende directo con `avc: { format: "annexb" }` sin que
+    // tengamos que convertir a AVCC en JS.
+    let h264Decoder = null;
+    let h264WaitingKeyframe = true;
+    let h264W = 0, h264H = 0;
+
+    function b64ToBytes(b64) {
+      const bin = atob(b64);
+      const arr = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      return arr;
+    }
+
+    function closeH264Decoder() {
+      if (h264Decoder) {
+        try { h264Decoder.close(); } catch (_) {}
+        h264Decoder = null;
+      }
+      h264WaitingKeyframe = true;
+      h264W = 0; h264H = 0;
+    }
+
+    function ensureH264Decoder() {
+      if (h264Decoder) return;
+      h264Decoder = new VideoDecoder({
+        output: (frame) => {
+          if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+            canvas.width = frame.displayWidth;
+            canvas.height = frame.displayHeight;
+          }
+          ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+          frame.close();
+        },
+        error: (e) => {
+          console.error("[h264] error del decoder:", e);
+          closeH264Decoder();
+          invoke("request_remote_keyframe").catch(() => {});
+        },
+      });
+      h264Decoder.configure({ codec: "avc1.42E01E", avc: { format: "annexb" }, optimizeForLatency: true });
+      h264WaitingKeyframe = true;
+    }
+
+    // Pinta un frame H.264 (Annex B en base64) del camino LAN/internet TCP.
+    function drawH264(b64, w, h, keyframe) {
+      if (!active) return;
+      if (typeof VideoDecoder === "undefined") {
+        // WebView2 demasiado antiguo para WebCodecs: no hay como decodificar.
+        return;
+      }
+      if (w !== h264W || h !== h264H) {
+        closeH264Decoder();
+        h264W = w; h264H = h;
+      }
+      ensureH264Decoder();
+      if (h264WaitingKeyframe && !keyframe) {
+        // Nos perdimos la keyframe (reconexion, resize): pedimos otra y
+        // descartamos este delta, que el decoder no puede usar sin ella.
+        invoke("request_remote_keyframe").catch(() => {});
+        return;
+      }
+      h264WaitingKeyframe = false;
+      try {
+        h264Decoder.decode(
+          new EncodedVideoChunk({
+            type: keyframe ? "key" : "delta",
+            timestamp: performance.now() * 1000,
+            data: b64ToBytes(b64),
+          })
+        );
+      } catch (e) {
+        console.error("[h264] decode fallo:", e);
+        closeH264Decoder();
+        invoke("request_remote_keyframe").catch(() => {});
+      }
+    }
 
     function fmtTime(ms) {
       const s = Math.floor(ms / 1000);
@@ -482,6 +567,7 @@
       saveThumbnail();
       active = false;
       clearInterval(timerId);
+      closeH264Decoder();
       if (driver) { try { driver.close(); } catch (_) {} driver = null; }
       view.classList.add("hidden");
       $("conn-status").textContent = "En línea · listo";
@@ -546,7 +632,7 @@
       $("sb-win-close").addEventListener("click", () => currentWindow.close());
     }
 
-    return { open, close, drawBitmap, drawJpegB64, setMetrics, isActive: () => active };
+    return { open, close, drawBitmap, drawJpegB64, drawH264, setMetrics, isActive: () => active };
   })();
 
   // Mapea un KeyboardEvent del navegador a un codigo de tecla virtual de Windows.

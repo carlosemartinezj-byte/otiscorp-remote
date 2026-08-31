@@ -26,23 +26,54 @@ Implementado:
 - **Control de ratón/teclado** (`input.rs`): inyección con `SendInput` (mover, botones,
   rueda, teclas VK con flag de tecla extendida, texto Unicode); coordenadas normalizadas
   0..1 para funcionar entre resoluciones distintas.
-- **Transporte de sesión** (`transport.rs`) — compartir pantalla + control, **en LAN, sin
-  servidor externo**:
-  - Descubrimiento por ID por **UDP broadcast** (puerto **49321**).
-  - Sesión **TCP** (puerto **49322**) con framing `[tipo][longitud][payload]`.
-  - El **host** codifica cada frame a **MJPEG** (`jpeg-encoder`, Rust puro) según el perfil
-    de calidad y reenvía a `SendInput` los eventos de entrada del visor.
-  - El **visor** recibe los frames y los pinta en un canvas a pantalla completa, y captura
-    ratón/teclado sobre él.
-  - Perfiles: **Ultraligero** (½ resolución, ~10 fps, JPEG 42), **Equilibrado** (nativa,
-    ~20 fps, JPEG 62), **Nítido** (nativa, ~30 fps, JPEG 80).
+- **Transporte de sesión** (`transport.rs`) — compartir pantalla + control, en **LAN** o
+  fuera de ella vía el **relay** (ver más abajo). Mismo protocolo en los dos casos:
+  - Descubrimiento por ID por **UDP broadcast** (puerto **49321**, solo LAN).
+  - **Dos conexiones TCP por sesión**, no una: video (host → visor, puerto **49322** en
+    LAN) y entrada/control (visor ↔ host, puerto **49323** en LAN). Antes iban
+    multiplexadas en un solo socket y un frame grande podía retrasar el clic que llegaba
+    justo detrás; separarlas fue el cambio que más se nota al usarlo.
+  - Framing `[tipo][longitud][payload]` en ambas.
+  - El **host** codifica a **H.264** (Media Foundation, hardware si el equipo tiene un
+    encoder síncrono compatible — si no, cae al encoder por software que trae Windows) y
+    reenvía a `SendInput` los eventos de entrada del visor. Si el equipo no tiene *ningún*
+    encoder H.264 disponible (fuera de Windows, o un caso raro), cae a MJPEG.
+  - El **visor** decodifica con `VideoDecoder` de **WebCodecs** (Annex B directo, sin
+    conversión a AVCC) y pinta cada frame en un canvas a pantalla completa; si el host usó
+    el fallback MJPEG, pinta el JPEG directo. Captura ratón/teclado sobre el canvas.
+  - **Cola de un solo hueco + descarte**: el hilo de captura nunca escribe en el socket de
+    video; dejar el frame codificado en un buzón que un hilo aparte vacía. Si ese hilo no
+    llegó a tiempo, se salta la codificación de ese frame (no se acumula retraso).
+  - **Bitrate adaptativo**: el hilo escritor mide cuántos frames se saltaron por
+    saturación y ajusta el bitrate objetivo del encoder cada ~1.5 s dentro del rango del
+    perfil.
+  - **Dirty rects de DXGI**: si sólo se movió el cursor (sin cambios de escritorio), no se
+    codifica ni se envía nada; si cambió una región chica, sólo esa región se recorta y
+    repinta en el lienzo NV12 persistente del encoder, no el frame completo.
+  - Perfiles: **Ultraligero** (½ resolución, ~24 fps, ~0.2–1.5 Mbps), **Equilibrado**
+    (nativa, ~30 fps, ~0.5–4 Mbps), **Nítido** (nativa, ~30 fps, ~1–8 Mbps) — bitrates de
+    arranque del rango adaptativo, no fijos.
+- **Conexión por internet vía relay** (`relay.rs`) — un servidor propio en Fly.io hace de
+  rendezvous TLS: host y visor abren cada uno una conexión saliente (atraviesa NAT/firewall
+  sin configurar nada) y el relay los empareja por ID. Las dos conexiones de la sesión
+  (video y entrada) se tunelan cada una por separado, emparejadas por el mismo ID con un
+  dígito de sufijo distinto — el relay no necesitó cambios para soportar esto.
 
 Pendiente:
-- **Cifrado TLS 1.3** del transporte (ahora el tráfico de sesión va en claro dentro de la LAN).
-- **Diálogo de aprobación de conexión entrante** (#2b) con auto-rechazo a los 24 s
-  (ahora el acceso desatendido **auto-acepta** la primera conexión entrante).
-- **Rendezvous / NAT traversal** para conectar fuera de la red local.
-- Vistas restantes: Dispositivos, Archivos, Historial, Ajustes.
+- **Cifrado TLS 1.3 del transporte en LAN** (en la LAN el tráfico de sesión va en claro; el
+  del relay sí va cifrado, Fly.io termina TLS en el borde).
+- **Encoder H.264 por hardware en modelo asíncrono**: el módulo `h264enc.rs` sólo soporta
+  el modelo síncrono clásico de Media Foundation. Varios encoders de hardware modernos
+  (confirmado en esta máquina) sólo se exponen en modelo asíncrono, así que hoy se
+  descartan y se usa el encoder por software — funciona bien, pero ese software tiene un
+  "lookahead" de arranque fijo de ~16 frames (~500 ms de pantalla congelada sólo al
+  conectar, no en régimen estable) que ninguna propiedad de `ICodecAPI` logra eliminar.
+  Soportar el modelo asíncrono (eventos `IMFAsyncCallback`) desbloquearía aceleración por
+  hardware real y quitaría ese arranque lento.
+- El camino **WebRTC por internet** (`webrtc.js`, servidor de señalización separado en
+  `rendezvous/`) sigue en MJPEG — es una ruta paralela a la de arriba y no entró en esta
+  migración a H.264.
+- Vistas restantes: Archivos, Historial.
 
 ## Cómo se usa (dos equipos en la misma red local)
 
@@ -56,8 +87,8 @@ Pendiente:
 
 > **Firewall de Windows:** la primera vez que el host escucha, Windows puede pedir permitir
 > el acceso de red de la app. Hay que **permitirlo** (en redes privadas) para que las
-> conexiones entrantes lleguen. Puertos usados: **UDP 49321** (descubrimiento) y
-> **TCP 49322** (sesión).
+> conexiones entrantes lleguen. Puertos usados: **UDP 49321** (descubrimiento), **TCP
+> 49322** (video) y **TCP 49323** (entrada/control).
 
 ## Conexión por internet (fuera de la LAN) — P2P
 
@@ -150,9 +181,11 @@ otiscorp-remote/
       ├─ main.rs         # comandos Tauri (bootstrap, captura, input, sesión remota)
       ├─ identity.rs     # ID persistente auto-generado, contraseña de sesión
       ├─ sysprofile.rs   # perfilado real (sysinfo) + versión Windows (windows-rs)
-      ├─ capture.rs      # motor de captura DXGI Desktop Duplication (hilo dedicado)
+      ├─ capture.rs      # motor de captura DXGI Desktop Duplication (hilo dedicado, dirty rects)
+      ├─ h264enc.rs      # encoder H.264 (Media Foundation) + conversion BGRA -> NV12
       ├─ input.rs        # inyección de ratón/teclado con SendInput
-      └─ transport.rs    # descubrimiento LAN + sesión TCP (MJPEG + eventos de entrada)
+      ├─ relay.rs        # cliente TLS del relay (rendezvous fuera de la LAN)
+      └─ transport.rs    # descubrimiento LAN + sesión TCP (dos sockets: video H.264 + entrada)
 ```
 
 ## Notas de diseño para bajo consumo

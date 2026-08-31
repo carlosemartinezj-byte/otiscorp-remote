@@ -98,6 +98,25 @@ pub fn host_tunnel(id: &str) -> io::Result<TcpStream> {
     bridge(tls)
 }
 
+/// Igual que `host_tunnel`, pero con un plazo maximo de espera por el visor.
+/// Se usa para el canal de ENTRADA de una sesion por internet: el canal de
+/// video ya emparejo a los dos equipos, asi que si el visor no abre tambien
+/// el canal de entrada en `timeout`, algo fue mal y abortamos esa sesion en
+/// vez de quedarnos esperando para siempre.
+pub fn host_tunnel_timeout(id: &str, timeout: Duration) -> io::Result<TcpStream> {
+    let mut tls = tls_connect("HOST", id)?;
+    tls.get_ref().set_read_timeout(Some(timeout)).ok();
+    let (line, _) = read_line(&mut tls)?;
+    if line != "PEER" {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("respuesta inesperada del relay: {line}"),
+        ));
+    }
+    tls.get_ref().set_read_timeout(None).ok();
+    bridge(tls)
+}
+
 /// Lado VISOR: pide al relay conectar con `id`. Devuelve un `TcpStream`
 /// (loopback) equivalente a haber conectado directo al host.
 pub fn viewer_tunnel(id: &str) -> Result<TcpStream, String> {
