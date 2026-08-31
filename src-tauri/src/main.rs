@@ -7,6 +7,7 @@ mod capture;
 mod identity;
 mod input;
 mod netscan;
+mod relay;
 mod sysprofile;
 mod transport;
 

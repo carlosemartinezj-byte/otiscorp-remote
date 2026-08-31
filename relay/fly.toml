@@ -1,0 +1,32 @@
+# Despliegue del relay de OtisCorp Remote en Fly.io.
+# Puerto 443 con TLS (Fly lo termina en el borde -> el tramo por internet va
+# cifrado) reenviando al relay interno en 8080. Puerto 5223 en claro para pruebas.
+app = "otiscorp-relay"
+primary_region = "dfw"
+
+[build]
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+  # El relay debe estar siempre disponible: no apagar la maquina por inactividad.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls"]
+
+  [[services.ports]]
+    port = 5223
+    handlers = []
+
+  [[services.tcp_checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

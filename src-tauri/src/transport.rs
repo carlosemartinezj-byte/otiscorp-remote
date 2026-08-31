@@ -260,13 +260,50 @@ impl Transport {
                 .ok();
         }
 
-        // 2) Listener TCP de sesiones entrantes.
+        // 2) Listener TCP de sesiones entrantes (misma red local).
         {
             let this = self.clone();
+            let app = app.clone();
+            let capture = capture.clone();
             std::thread::Builder::new()
                 .name("otis-host".into())
                 .spawn(move || this.host_listener(app, capture))
                 .ok();
+        }
+
+        // 3) Registro en el relay para conexiones FUERA de la red local.
+        {
+            let this = self.clone();
+            std::thread::Builder::new()
+                .name("otis-relay-host".into())
+                .spawn(move || this.relay_host_loop(app, id, capture))
+                .ok();
+        }
+    }
+
+    /// Mantiene el equipo registrado en el relay y atiende una sesion entrante
+    /// por internet cada vez que un visor se conecta a traves de el.
+    fn relay_host_loop(self: Arc<Self>, app: AppHandle, id: String, capture: Arc<CaptureEngine>) {
+        loop {
+            match crate::relay::host_tunnel(&id) {
+                Ok(stream) => {
+                    // Solo una sesion entrante a la vez (compartida con la LAN).
+                    if self.incoming_active.swap(true, Ordering::SeqCst) {
+                        let _ = stream.shutdown(std::net::Shutdown::Both);
+                        continue;
+                    }
+                    let _ = app.emit("incoming-session", "internet".to_string());
+                    eprintln!("[relay-host] sesion entrante por internet");
+                    self.handle_incoming(stream, &app, &capture);
+                    self.incoming_active.store(false, Ordering::SeqCst);
+                    let _ = app.emit("incoming-session-ended", ());
+                }
+                Err(e) => {
+                    // Relay no disponible o conexion caida: reintenta con calma.
+                    eprintln!("[relay-host] {e}");
+                    std::thread::sleep(Duration::from_secs(3));
+                }
+            }
         }
     }
 
@@ -380,13 +417,19 @@ impl Transport {
     /// Conecta a un peer por ID (descubrimiento LAN) o por IP directa, y empieza
     /// a recibir su pantalla. Emite `remote-frame` y `remote-metrics` a la UI.
     pub fn connect(&self, app: AppHandle, peer_id: &str, profile: &str) -> Result<(), String> {
-        let addr = resolve_peer(peer_id).ok_or_else(|| {
-            "No se encontró el equipo en la red local. ¿Está encendido y con OtisCorp abierto?"
-                .to_string()
-        })?;
-
-        let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
-            .map_err(|e| format!("No se pudo conectar: {e}"))?;
+        // Primero se intenta la red local (rapido, sin servidor); si el equipo no
+        // esta en la LAN, se conecta por el relay (fuera de la red local).
+        let mut stream = match resolve_peer(peer_id) {
+            Some(addr) => TcpStream::connect_timeout(&addr, Duration::from_secs(5))
+                .map_err(|e| format!("No se pudo conectar: {e}"))?,
+            None => {
+                let id: String = peer_id.chars().filter(|c| c.is_ascii_digit()).collect();
+                if id.len() < 6 {
+                    return Err("Introduce un ID válido de 9 dígitos.".to_string());
+                }
+                crate::relay::viewer_tunnel(&id)?
+            }
+        };
         stream
             .set_nodelay(true)
             .map_err(|e| format!("nodelay: {e}"))?;
