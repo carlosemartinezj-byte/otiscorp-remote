@@ -2261,7 +2261,7 @@ dependencies = [
 
 [[package]]
 name = "otiscorp-remote"
-version = "2.9.1"
+version = "2.9.2"
 dependencies = [
  "base64 0.22.1",
  "core-foundation",

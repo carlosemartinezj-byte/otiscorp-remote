@@ -101,9 +101,14 @@ struct JpegQuality {
 
 fn jpeg_quality_for(profile: &str) -> JpegQuality {
     match profile {
-        "sharp" => JpegQuality { jpeg: 85, scale: 1, min_interval: Duration::from_millis(33) },
-        "balanced" => JpegQuality { jpeg: 70, scale: 1, min_interval: Duration::from_millis(33) },
-        _ => JpegQuality { jpeg: 65, scale: 2, min_interval: Duration::from_millis(33) },
+        // Nitido: resolucion completa. Solo recomendable en LAN o subida buena.
+        "sharp" => JpegQuality { jpeg: 72, scale: 1, min_interval: Duration::from_millis(33) },
+        // Equilibrado (por defecto): MEDIA resolucion. 1/4 de pixeles => JPEG
+        // ~4x mas pequeno, codifica ~4x mas rapido, 1/4 de ancho de banda. Es
+        // el salto grande de fluidez por el relay.
+        "balanced" => JpegQuality { jpeg: 60, scale: 2, min_interval: Duration::from_millis(33) },
+        // Ultraligero: 1/3 de resolucion. Para enlaces flojos / CPUs de gama baja.
+        _ => JpegQuality { jpeg: 52, scale: 3, min_interval: Duration::from_millis(40) },
     }
 }
 
@@ -143,15 +148,38 @@ fn downscale_into(src: &[u8], w: u32, h: u32, scale: u32, out: &mut Vec<u8>) -> 
     (sw as u32, sh as u32)
 }
 
-// ---- Sink del host (fallback): codifica cada frame a JPEG completo --------
+// ---- Sink del host (MJPEG): codifica cada frame a JPEG completo ----------
+//
+// **El hilo de captura NUNCA escribe en el socket.** Codifica el frame y lo deja
+// en un buzon de un solo hueco; un hilo aparte hace la escritura de red
+// (bloqueante). Si la red va detras cuando llega el siguiente frame, se DESCARTA
+// el que estaba en el hueco (gana el mas reciente) en vez de encolar: bajo
+// congestion se pierde fps, no se acumula retraso. Antes `on_frame` escribia
+// directo en el socket, asi que la captura se quedaba parada ~1 frame entero
+// esperando a que el JPEG cruzara el relay -> 3 fps.
 
 struct JpegSender {
-    stream: TcpStream,
-    quality: JpegQuality,
+    queue: Arc<FrameQueue>,
     alive: Arc<AtomicBool>,
+    quality: JpegQuality,
     last_sent: Instant,
     scaled: Vec<u8>,
     enc_buf: Vec<u8>,
+}
+
+impl JpegSender {
+    fn new(stream: TcpStream, quality: JpegQuality, alive: Arc<AtomicBool>) -> Self {
+        let queue = FrameQueue::new();
+        spawn_simple_frame_writer(stream, queue.clone(), alive.clone());
+        JpegSender {
+            queue,
+            alive,
+            quality,
+            last_sent: Instant::now() - Duration::from_secs(1),
+            scaled: Vec::new(),
+            enc_buf: Vec::new(),
+        }
+    }
 }
 
 impl FrameSink for JpegSender {
@@ -163,6 +191,12 @@ impl FrameSink for JpegSender {
             return;
         }
         if bgra.len() < (width as usize * height as usize * 4) {
+            return;
+        }
+        // El escritor todavia no ha vaciado el hueco: la red va detras. Saltamos
+        // ESTE frame sin ni siquiera codificarlo (ahorra CPU); el siguiente que
+        // pillemos ya sera mas nuevo.
+        if self.queue.is_busy() {
             return;
         }
 
@@ -183,12 +217,32 @@ impl FrameSink for JpegSender {
         }
 
         let payload = build_frame_payload(CODEC_JPEG, true, sw, sh, &self.enc_buf);
-        if write_msg(&mut self.stream, MSG_FRAME, &payload).is_err() {
-            self.alive.store(false, Ordering::SeqCst);
-        } else {
-            self.last_sent = Instant::now();
-        }
+        self.queue.push(payload);
+        self.last_sent = Instant::now();
     }
+}
+
+/// Hilo escritor minimo para MJPEG: saca el frame mas reciente del buzon y lo
+/// escribe en el socket (bloqueante). Sin logica de bitrate (eso es solo del
+/// camino H.264). Termina cuando `alive` se apaga o falla la escritura.
+fn spawn_simple_frame_writer(mut stream: TcpStream, queue: Arc<FrameQueue>, alive: Arc<AtomicBool>) {
+    std::thread::Builder::new()
+        .name("otis-jpeg-writer".into())
+        .spawn(move || loop {
+            if !alive.load(Ordering::SeqCst) {
+                break;
+            }
+            if let Some(payload) = queue.pop_timeout(Duration::from_millis(500)) {
+                if write_msg(&mut stream, MSG_FRAME, &payload).is_err() {
+                    alive.store(false, Ordering::SeqCst);
+                    queue.shutdown();
+                    break;
+                }
+            } else if !queue.alive.load(Ordering::SeqCst) {
+                break;
+            }
+        })
+        .ok();
 }
 
 // ---- Cola de un solo hueco (frame mas reciente, descarta el anterior) -----
@@ -515,14 +569,7 @@ fn make_video_sink(
             return Box::new(H264Sender::new(stream, profile, alive, force_keyframe));
         }
     }
-    Box::new(JpegSender {
-        stream,
-        quality: jpeg_quality_for(profile),
-        alive,
-        last_sent: Instant::now() - Duration::from_secs(1),
-        scaled: Vec::new(),
-        enc_buf: Vec::new(),
-    })
+    Box::new(JpegSender::new(stream, jpeg_quality_for(profile), alive))
 }
 
 // ---- Sink local: emite cada frame al PROPIO WebView (para reenviar por WebRTC).

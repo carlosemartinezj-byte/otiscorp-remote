@@ -149,39 +149,51 @@ fn bridge(tls: Tls) -> io::Result<TcpStream> {
 
 /// Bombea bytes full-duplex entre el TLS y el socket interno, en un solo hilo,
 /// usando lecturas con timeout corto (las escrituras quedan bloqueantes).
+///
+/// Buffer grande (128 KB) y VACIADO por rafagas: en cada pasada mueve hasta 8
+/// bloques seguidos por sentido antes de cambiar. Asi un frame JPEG entero cruza
+/// en una sola pasada en vez de en ~13 idas y vueltas de 32 KB con `flush` entre
+/// medias (lo que limitaba mucho el throughput por el relay).
 fn pump(mut tls: Tls, mut inner: TcpStream) {
     let to = Duration::from_millis(5);
     tls.get_ref().set_read_timeout(Some(to)).ok();
     inner.set_read_timeout(Some(to)).ok();
 
-    let mut buf = [0u8; 32 * 1024];
-    loop {
+    let mut buf = [0u8; 128 * 1024];
+    'pump: loop {
         let mut idle = true;
 
         // inner (sesion local) -> tls (internet)
-        match inner.read(&mut buf) {
-            Ok(0) => break, // sesion local cerrada
-            Ok(n) => {
-                idle = false;
-                if tls.write_all(&buf[..n]).and_then(|_| tls.flush()).is_err() {
-                    break;
+        for _ in 0..8 {
+            match inner.read(&mut buf) {
+                Ok(0) => break 'pump, // sesion local cerrada
+                Ok(n) => {
+                    idle = false;
+                    if tls.write_all(&buf[..n]).is_err() {
+                        break 'pump;
+                    }
                 }
+                Err(e) if is_would_block(&e) => break,
+                Err(_) => break 'pump,
             }
-            Err(e) if is_would_block(&e) => {}
-            Err(_) => break,
+        }
+        if !idle {
+            let _ = tls.flush();
         }
 
         // tls (internet) -> inner (sesion local)
-        match tls.read(&mut buf) {
-            Ok(0) => break, // relay/peer cerro
-            Ok(n) => {
-                idle = false;
-                if inner.write_all(&buf[..n]).is_err() {
-                    break;
+        for _ in 0..8 {
+            match tls.read(&mut buf) {
+                Ok(0) => break 'pump, // relay/peer cerro
+                Ok(n) => {
+                    idle = false;
+                    if inner.write_all(&buf[..n]).is_err() {
+                        break 'pump;
+                    }
                 }
+                Err(e) if is_would_block(&e) => break,
+                Err(_) => break 'pump,
             }
-            Err(e) if is_would_block(&e) => {}
-            Err(_) => break,
         }
 
         if idle {

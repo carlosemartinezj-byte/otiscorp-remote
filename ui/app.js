@@ -283,18 +283,26 @@
   });
 
   // Punto de entrada unico de conexion (lo usan el boton y los equipos guardados).
+  // Acepta un ID de 9 digitos O una IP local (192.168.x.x): con IP la conexion
+  // va SIEMPRE directa por la LAN — sin descubrimiento, sin relay, latencia
+  // minima. Es la opcion mas fluida si los dos equipos estan en la misma red.
   function startConnect(rawId, profile) {
-    const peer = String(rawId).replace(/\D/g, "");
-    if (peer.length < 9) {
-      toast("Introduce un ID de 9 dígitos");
+    const raw = String(rawId).trim();
+    const isIp = /^(\d{1,3}\.){3}\d{1,3}$/.test(raw);
+    const peer = isIp ? raw : raw.replace(/\D/g, "");
+    if (!isIp && peer.length < 9) {
+      toast("Introduce un ID de 9 dígitos (o una IP local: 192.168.x.x)");
       return;
     }
     profile = profile || currentProfile();
-    // Guarda/actualiza el equipo para la proxima (como AnyDesk).
-    Devices.upsert(peer, null, profile);
-    Devices.renderAll();
-    $("conn-status").textContent = `Conectando a ${groupId(peer)}…`;
+    if (!isIp) {
+      // Guarda/actualiza el equipo para la proxima (como AnyDesk).
+      Devices.upsert(peer, null, profile);
+      Devices.renderAll();
+    }
+    $("conn-status").textContent = `Conectando a ${isIp ? peer : groupId(peer)}…`;
     $("conn-loader").classList.remove("hidden");
+    if (isIp) { connectViaLan(peer, profile); return; } // IP local => directo, sin relay
     // Transporte por defecto: NATIVO del backend — descubrimiento LAN si el
     // equipo esta en la misma red, o tunel TCP por el relay
     // (otiscorp-relay.fly.dev:443, TLS saliente) si no. Cruza cualquier
@@ -319,7 +327,8 @@
         try { invoke("disconnect_peer"); } catch (_) {}
       },
     };
-    RemoteSession.open("Sesión · " + groupId(peer), profile, driver, peer);
+    const label = /[.:]/.test(peer) ? peer : groupId(peer);
+    RemoteSession.open("Sesión · " + label, profile, driver, peer);
     // Camino H.264 (el normal: hardware/software segun el equipo host).
     unlisteners.push(await listen("remote-frame-h264", (e) => {
       const p = e.payload || {};
@@ -500,14 +509,30 @@
       if (bitmap.close) bitmap.close();
     }
 
-    // Pinta un JPEG en base64 (camino LAN).
-    function drawJpegB64(b64, w, h) {
-      if (!active) return;
-      if (w && h && (canvas.width !== w || canvas.height !== h)) {
-        canvas.width = w; canvas.height = h;
+    // Pinta un JPEG en base64 (camino LAN/relay). Decodifica con
+    // createImageBitmap (fuera del hilo principal, mas rapido que un
+    // data: URL) y SUELTA frames si el decode va por detras: mejor ver
+    // el ultimo frame que acumular retraso.
+    let jpegDecoding = false;
+    async function drawJpegB64(b64, w, h) {
+      if (!active || jpegDecoding) return;
+      jpegDecoding = true;
+      try {
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const bmp = await createImageBitmap(new Blob([bytes], { type: "image/jpeg" }));
+        if (active) {
+          if (canvas.width !== bmp.width || canvas.height !== bmp.height) {
+            canvas.width = bmp.width; canvas.height = bmp.height;
+          }
+          ctx.drawImage(bmp, 0, 0);
+        }
+        if (bmp.close) bmp.close();
+      } catch (_) {
+        // frame corrupto: lo saltamos, el siguiente repinta
       }
-      img.onload = () => ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      img.src = "data:image/jpeg;base64," + b64;
+      jpegDecoding = false;
     }
 
     function setMetrics(m) {
@@ -544,10 +569,32 @@
     }
 
     const BTN = { 0: "left", 1: "middle", 2: "right" };
-    canvas.addEventListener("mousemove", (e) => { const n = norm(e); send({ t: "move", x: n.x, y: n.y }); });
+    // El raton dispara 100-200 mousemove/s; enviarlos todos satura el canal de
+    // entrada y añade lag. Se coalescen: se manda YA el primero y luego, como
+    // mucho, uno cada 12 ms con la ultima posicion (trailing).
+    let lastMoveSent = 0, pendingMove = null, moveFlushTimer = null;
+    function flushMove() {
+      moveFlushTimer = null;
+      if (!pendingMove) return;
+      send(pendingMove); pendingMove = null; lastMoveSent = performance.now();
+    }
+    function queueMove(n) {
+      const now = performance.now();
+      if (now - lastMoveSent >= 12) {
+        send({ t: "move", x: n.x, y: n.y }); lastMoveSent = now; pendingMove = null;
+      } else {
+        pendingMove = { t: "move", x: n.x, y: n.y };
+        if (!moveFlushTimer) moveFlushTimer = setTimeout(flushMove, 12);
+      }
+    }
+    canvas.addEventListener("mousemove", (e) => queueMove(norm(e)));
     canvas.addEventListener("mousedown", (e) => {
       e.preventDefault(); canvas.focus();
-      const n = norm(e); send({ t: "move", x: n.x, y: n.y });
+      // Clic: posicion exacta AHORA (sin throttle) y luego el boton.
+      const n = norm(e);
+      if (moveFlushTimer) { clearTimeout(moveFlushTimer); moveFlushTimer = null; }
+      pendingMove = null;
+      send({ t: "move", x: n.x, y: n.y }); lastMoveSent = performance.now();
       send({ t: "btn", button: BTN[e.button] || "left", down: true });
     });
     canvas.addEventListener("mouseup", (e) => {
@@ -716,10 +763,12 @@
       `Captura: ${Math.round(s.fps)} fps · ${s.width}×${s.height} · ${s.raw_mb_per_s.toFixed(1)} MB/s (crudo)`;
   });
 
-  // Formatea el ID remoto mientras se escribe.
+  // Formatea el ID remoto mientras se escribe. Si lleva un punto, es una IP
+  // local: se deja tal cual (no se agrupa en bloques de 3).
   $("peer-id").addEventListener("input", (e) => {
-    const pos = e.target.selectionStart;
     const before = e.target.value;
+    if (before.includes(".")) return;
+    const pos = e.target.selectionStart;
     e.target.value = groupId(before);
     // Reajuste simple del cursor al final si crecio.
     if (pos >= before.length) e.target.selectionStart = e.target.selectionEnd = e.target.value.length;
