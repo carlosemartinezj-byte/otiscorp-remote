@@ -1,25 +1,19 @@
 name: Release
 
-# Se dispara al subir un tag "vX.Y.Z" (ej: v2.5.0). Compila Windows y Mac,
-# firma las actualizaciones, y publica un Release en GitHub con el .exe, el
-# .dmg y el latest.json que el auto-updater de la app revisa al arrancar.
+# Se dispara al subir un tag "vX.Y.Z" (ej: v2.6.0). Compila Windows, firma las
+# actualizaciones, y publica un Release en GitHub con el .exe y el latest.json
+# que el auto-updater de la app revisa al arrancar.
 on:
   push:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
   release:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: windows-latest
-            args: ""
-          - platform: macos-latest
-            args: ""
-
-    runs-on: ${{ matrix.platform }}
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -46,4 +40,3 @@ jobs:
           releaseBody: "Actualizacion automatica de OtisCorp Remote."
           releaseDraft: false
           prerelease: false
-          args: ${{ matrix.args }}
