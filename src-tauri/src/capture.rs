@@ -38,8 +38,13 @@ pub struct CaptureStats {
 
 /// Consumidor de frames en crudo (BGRA empaquetado). Lo implementa el host de
 /// una sesion para codificar y enviar cada frame por el transporte.
+///
+/// `dirty` son las regiones (x, y, w, h) que cambiaron desde el frame anterior,
+/// tal como las reporta DXGI Desktop Duplication. Solo se llama cuando hay
+/// contenido nuevo de verdad (un frame de "solo se movio el cursor" no genera
+/// llamada: no hay nada nuevo que codificar ni enviar).
 pub trait FrameSink: Send {
-    fn on_frame(&mut self, width: u32, height: u32, bgra: &[u8]);
+    fn on_frame(&mut self, width: u32, height: u32, bgra: &[u8], dirty: &[(u32, u32, u32, u32)]);
 }
 
 /// Controlador del motor: arranca/para el hilo y expone las estadisticas.
@@ -140,9 +145,11 @@ fn capture_loop<F>(
                 window_frames += 1;
                 window_bytes += frame.bytes as u64;
 
-                // Entregar el frame en crudo al consumidor (host de sesion).
+                // Entregar el frame en crudo al consumidor (host de sesion). Si
+                // `next_frame` no trajo nada (solo se movio el cursor, sin
+                // contenido nuevo), no llegamos aqui: no hay nada que codificar.
                 if let Some(s) = sink.as_mut() {
-                    s.on_frame(frame.width, frame.height, backend.buffer());
+                    s.on_frame(frame.width, frame.height, backend.buffer(), &frame.dirty);
                 }
 
                 // Publicar cada ~500 ms.
@@ -205,6 +212,8 @@ struct CapturedFrame {
     width: u32,
     height: u32,
     bytes: usize,
+    /// Regiones (x, y, w, h) que cambiaron desde el frame anterior.
+    dirty: Vec<(u32, u32, u32, u32)>,
 }
 
 #[derive(Debug)]
@@ -222,7 +231,7 @@ enum CaptureError {
 mod win {
     use super::{CaptureError, CapturedFrame};
     use windows::core::Interface;
-    use windows::Win32::Foundation::HMODULE;
+    use windows::Win32::Foundation::{HMODULE, RECT};
     use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_0};
     use windows::Win32::Graphics::Direct3D11::{
         D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
@@ -335,7 +344,8 @@ mod win {
             Ok(staging)
         }
 
-        /// Intenta obtener el siguiente frame. `Ok(None)` = sin cambios (timeout).
+        /// Intenta obtener el siguiente frame. `Ok(None)` = sin cambios (timeout,
+        /// o solo se movio el cursor sin contenido nuevo de escritorio).
         pub fn next_frame(&mut self, timeout_ms: u32) -> Result<Option<CapturedFrame>, CaptureError> {
             unsafe {
                 let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
@@ -351,20 +361,47 @@ mod win {
                 }
 
                 // Aseguramos liberar el frame aunque fallemos a mitad.
-                let result = self.copy_frame(resource);
+                let result = self.copy_frame(resource, &info);
                 let _ = self.dupl.ReleaseFrame();
                 result
+            }
+        }
+
+        /// Lee las dirty rects de este frame (regiones de escritorio que
+        /// cambiaron). Si no hay metadata disponible, asume el frame completo
+        /// para no arriesgar quedarnos con contenido viejo en el buffer.
+        unsafe fn read_dirty_rects(&self, width: u32, height: u32) -> Vec<(u32, u32, u32, u32)> {
+            const MAX_RECTS: usize = 64;
+            let mut buf = [RECT::default(); MAX_RECTS];
+            let mut needed: u32 = 0;
+            let cap_bytes = (MAX_RECTS * std::mem::size_of::<RECT>()) as u32;
+            match self.dupl.GetFrameDirtyRects(cap_bytes, buf.as_mut_ptr(), &mut needed) {
+                Ok(()) => {
+                    let n = (needed as usize / std::mem::size_of::<RECT>()).min(MAX_RECTS);
+                    buf[..n]
+                        .iter()
+                        .filter_map(|r| clamp_rect(r, width, height))
+                        .collect()
+                }
+                Err(_) => vec![(0, 0, width, height)],
             }
         }
 
         unsafe fn copy_frame(
             &mut self,
             resource: Option<IDXGIResource>,
+            info: &DXGI_OUTDUPL_FRAME_INFO,
         ) -> Result<Option<CapturedFrame>, CaptureError> {
             let resource = match resource {
                 Some(r) => r,
                 None => return Ok(None),
             };
+            if info.AccumulatedFrames == 0 {
+                // Solo se actualizo la posicion del cursor: sin contenido nuevo
+                // de escritorio, no hay nada que codificar ni enviar.
+                return Ok(None);
+            }
+
             let tex: ID3D11Texture2D = resource
                 .cast()
                 .map_err(|e| CaptureError::Fatal(format!("cast a Texture2D: {e}")))?;
@@ -375,27 +412,49 @@ mod win {
             let staging = self.ensure_staging(&desc)?;
             self.context.CopyResource(&staging, &tex);
 
+            let width = desc.Width as usize;
+            let height = desc.Height as usize;
+            let tight = width * 4;
+
+            // Si cambio el tamano del buffer (primer frame o cambio de
+            // resolucion), forzamos un repintado completo esta vez: el resto
+            // del buffer quedaria con basura/contenido de otra resolucion.
+            let resized = self.buffer.len() != tight * height;
+            if resized {
+                self.buffer.resize(tight * height, 0);
+            }
+            let dirty = if resized {
+                vec![(0, 0, desc.Width, desc.Height)]
+            } else {
+                self.read_dirty_rects(desc.Width, desc.Height)
+            };
+
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
             self.context
                 .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
                 .map_err(|e| CaptureError::Fatal(format!("Map: {e}")))?;
 
-            let width = desc.Width as usize;
-            let height = desc.Height as usize;
             let row_pitch = mapped.RowPitch as usize;
-            let tight = width * 4;
-
-            // Empaquetar en BGRA contiguo (sin el padding de fila del staging).
-            if self.buffer.len() != tight * height {
-                self.buffer.resize(tight * height, 0);
-            }
             let src = mapped.pData as *const u8;
-            for y in 0..height {
-                std::ptr::copy_nonoverlapping(
-                    src.add(y * row_pitch),
-                    self.buffer.as_mut_ptr().add(y * tight),
-                    tight,
-                );
+
+            // Empaquetar en BGRA contiguo, pero solo las filas que cambiaron:
+            // el resto del buffer conserva el contenido del frame anterior
+            // (es un lienzo persistente, no se limpia entre llamadas).
+            for &(rx, ry, rw, rh) in &dirty {
+                let y0 = ry as usize;
+                let y1 = ((ry + rh) as usize).min(height);
+                let x0 = (rx as usize) * 4;
+                let x1 = (((rx + rw) as usize).min(width)) * 4;
+                if x0 >= x1 || y0 >= y1 {
+                    continue;
+                }
+                for y in y0..y1 {
+                    std::ptr::copy_nonoverlapping(
+                        src.add(y * row_pitch + x0),
+                        self.buffer.as_mut_ptr().add(y * tight + x0),
+                        x1 - x0,
+                    );
+                }
             }
 
             self.context.Unmap(&staging, 0);
@@ -404,12 +463,27 @@ mod win {
                 width: desc.Width,
                 height: desc.Height,
                 bytes: self.buffer.len(),
+                dirty,
             }))
         }
 
         /// Buffer BGRA empaquetado del ultimo frame capturado.
         pub fn buffer(&self) -> &[u8] {
             &self.buffer
+        }
+    }
+
+    /// Recorta un RECT de DXGI (puede tener coordenadas fuera de rango en
+    /// casos raros) a los limites del frame; descarta rects vacios.
+    fn clamp_rect(r: &RECT, w: u32, h: u32) -> Option<(u32, u32, u32, u32)> {
+        let x0 = r.left.max(0) as u32;
+        let y0 = r.top.max(0) as u32;
+        let x1 = (r.right.max(0) as u32).min(w);
+        let y1 = (r.bottom.max(0) as u32).min(h);
+        if x1 <= x0 || y1 <= y0 {
+            None
+        } else {
+            Some((x0, y0, x1 - x0, y1 - y0))
         }
     }
 }
@@ -474,6 +548,9 @@ mod mac {
                 width: w as u32,
                 height: h as u32,
                 bytes: self.buffer.len(),
+                // Core Graphics no reporta dirty rects: tratamos cada frame
+                // como completo (sin la optimizacion de recorte de DXGI).
+                dirty: vec![(0, 0, w as u32, h as u32)],
             }))
         }
 

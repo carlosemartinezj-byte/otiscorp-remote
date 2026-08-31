@@ -4,6 +4,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod capture;
+mod h264enc;
 mod identity;
 mod input;
 mod netscan;
@@ -164,6 +165,13 @@ fn send_remote_input(state: State<AppState>, ev: serde_json::Value) {
     state.transport.send_input(&ev);
 }
 
+/// Pide al host una keyframe H.264 (recuperacion tras un frame corrupto/perdido
+/// en el decoder del visor).
+#[tauri::command]
+fn request_remote_keyframe(state: State<AppState>) {
+    state.transport.request_keyframe();
+}
+
 // ---- Modo P2P por internet (WebRTC en el WebView) -------------------------
 /// Arranca la captura emitiendo frames al propio WebView (evento `local-frame`),
 /// que el frontend reenvia por el data channel de WebRTC al visor.
@@ -258,6 +266,7 @@ fn main() {
             end_incoming_session,
             check_online_lan,
             send_remote_input,
+            request_remote_keyframe,
             start_sharing,
             stop_sharing,
             scan_network
