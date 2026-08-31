@@ -115,7 +115,60 @@ impl Default for CaptureEngine {
     }
 }
 
+/// Entrega un frame en crudo al sink y publica estadisticas ~cada 500 ms.
+/// Comun al camino DXGI y al de reserva por GDI.
+#[allow(clippy::too_many_arguments)]
+fn deliver_frame<F: Fn(CaptureStats)>(
+    sink: &mut Option<Box<dyn FrameSink>>,
+    stats: &Arc<Mutex<CaptureStats>>,
+    on_stats: &F,
+    width: u32,
+    height: u32,
+    buffer: &[u8],
+    dirty: &[(u32, u32, u32, u32)],
+    frames_total: &mut u64,
+    window_frames: &mut u32,
+    window_bytes: &mut u64,
+    window_start: &mut Instant,
+) {
+    *frames_total += 1;
+    *window_frames += 1;
+    *window_bytes += buffer.len() as u64;
+
+    if let Some(s) = sink.as_mut() {
+        s.on_frame(width, height, buffer, dirty);
+    }
+
+    let elapsed = window_start.elapsed();
+    if elapsed >= Duration::from_millis(500) {
+        let secs = elapsed.as_secs_f32().max(0.001);
+        let snap = {
+            let mut s = stats.lock().unwrap();
+            s.fps = *window_frames as f32 / secs;
+            s.width = width;
+            s.height = height;
+            s.frames = *frames_total;
+            s.last_frame_bytes = buffer.len();
+            s.raw_mb_per_s = (*window_bytes as f32 / secs) / (1024.0 * 1024.0);
+            s.running = true;
+            s.clone()
+        };
+        on_stats(snap);
+        *window_frames = 0;
+        *window_bytes = 0;
+        *window_start = Instant::now();
+    }
+}
+
 /// Bucle comun a ambas plataformas: mide y publica estadisticas.
+///
+/// En Windows: DXGI Desktop Duplication es el camino eficiente, pero **no
+/// entrega nada si la pantalla no cambia** (asi que recien conectado a un equipo
+/// quieto la sesion se veria NEGRA) y **falla del todo en VM / RDP / equipos sin
+/// monitor activo**. Para cubrir los dos casos hay una captura de reserva por
+/// GDI (`win_gdi`): si DXGI no trae frame en ~700 ms — o si ni siquiera arranca —
+/// se saca un frame completo por GDI. Eso garantiza el primer frame al instante
+/// y una imagen (a pocos fps) siempre que haya algo que capturar.
 fn capture_loop<F>(
     running: Arc<AtomicBool>,
     stats: Arc<Mutex<CaptureStats>>,
@@ -124,82 +177,101 @@ fn capture_loop<F>(
 ) where
     F: Fn(CaptureStats),
 {
-    let mut backend = match Backend::new() {
-        Ok(b) => b,
+    // `None` si el backend nativo (DXGI en Windows) no arranca: se tira solo de
+    // la reserva GDI. En plataformas sin reserva, eso es fatal.
+    let mut backend: Option<Backend> = match Backend::new() {
+        Ok(b) => Some(b),
         Err(e) => {
-            eprintln!("[captura] no se pudo iniciar DXGI: {e:?}");
-            running.store(false, Ordering::SeqCst);
-            return;
+            eprintln!("[captura] backend nativo no disponible ({e:?})");
+            None
         }
     };
+
+    #[cfg(windows)]
+    let mut gdi = win_gdi::GdiGrabber::new();
+
+    #[cfg(not(windows))]
+    if backend.is_none() {
+        eprintln!("[captura] sin backend de captura en esta plataforma");
+        running.store(false, Ordering::SeqCst);
+        return;
+    }
 
     let mut frames_total: u64 = 0;
     let mut window_frames: u32 = 0;
     let mut window_bytes: u64 = 0;
     let mut window_start = Instant::now();
+    // Puesto en el pasado: fuerza un primer frame (por GDI) de inmediato, aunque
+    // la pantalla remota este completamente quieta.
+    let mut last_delivered = Instant::now() - Duration::from_secs(1);
 
     while running.load(Ordering::SeqCst) {
-        match backend.next_frame(200) {
-            Ok(Some(frame)) => {
-                frames_total += 1;
-                window_frames += 1;
-                window_bytes += frame.bytes as u64;
+        let mut got_native = false;
 
-                // Entregar el frame en crudo al consumidor (host de sesion). Si
-                // `next_frame` no trajo nada (solo se movio el cursor, sin
-                // contenido nuevo), no llegamos aqui: no hay nada que codificar.
-                if let Some(s) = sink.as_mut() {
-                    s.on_frame(frame.width, frame.height, backend.buffer(), &frame.dirty);
+        if let Some(b) = backend.as_mut() {
+            match b.next_frame(150) {
+                Ok(Some(frame)) => {
+                    deliver_frame(
+                        &mut sink, &stats, &on_stats,
+                        frame.width, frame.height, b.buffer(), &frame.dirty,
+                        &mut frames_total, &mut window_frames, &mut window_bytes, &mut window_start,
+                    );
+                    last_delivered = Instant::now();
+                    got_native = true;
                 }
+                Ok(None) => {}
+                Err(CaptureError::AccessLost) => {
+                    // Cambio de resolucion / bloqueo de sesion / fullscreen: reintentar.
+                    if let Err(e) = b.reinit() {
+                        eprintln!("[captura] fallo al reinicializar duplicacion: {e:?}");
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                }
+                Err(CaptureError::Fatal(e)) => {
+                    eprintln!("[captura] el backend nativo cayo ({e}); sigo con captura GDI de reserva");
+                    backend = None;
+                }
+            }
+        }
 
-                // Publicar cada ~500 ms.
-                let elapsed = window_start.elapsed();
-                if elapsed >= Duration::from_millis(500) {
-                    let secs = elapsed.as_secs_f32().max(0.001);
-                    let snap = {
-                        let mut s = stats.lock().unwrap();
-                        s.fps = window_frames as f32 / secs;
-                        s.width = frame.width;
-                        s.height = frame.height;
-                        s.frames = frames_total;
-                        s.last_frame_bytes = frame.bytes;
-                        s.raw_mb_per_s = (window_bytes as f32 / secs) / (1024.0 * 1024.0);
-                        s.running = true;
-                        s.clone()
-                    };
-                    on_stats(snap);
-                    window_frames = 0;
-                    window_bytes = 0;
-                    window_start = Instant::now();
+        // Relleno / keepalive: DXGI no trajo nada en ~700 ms (pantalla quieta o
+        // DXGI caido/ausente) -> frame completo por GDI.
+        if !got_native && last_delivered.elapsed() >= Duration::from_millis(700) {
+            #[cfg(windows)]
+            {
+                match gdi.grab() {
+                    Ok(frame) => {
+                        deliver_frame(
+                            &mut sink, &stats, &on_stats,
+                            frame.width, frame.height, gdi.buffer(), &frame.dirty,
+                            &mut frames_total, &mut window_frames, &mut window_bytes, &mut window_start,
+                        );
+                        last_delivered = Instant::now();
+                    }
+                    Err(e) => {
+                        eprintln!("[captura] GDI de reserva fallo: {e:?}");
+                        std::thread::sleep(Duration::from_millis(300));
+                        if backend.is_none() {
+                            // Ni DXGI ni GDI: no hay forma de capturar. Evita el
+                            // busy-loop; el controlador reintentara si procede.
+                            std::thread::sleep(Duration::from_millis(700));
+                        }
+                    }
                 }
             }
-            Ok(None) => {
-                // Sin cambios en pantalla (timeout DXGI): nada que hacer, no gasta CPU.
-                // Aun asi refrescamos fps a la baja si llevamos rato sin frames.
-                if window_start.elapsed() >= Duration::from_millis(1000) {
-                    let snap = {
-                        let mut s = stats.lock().unwrap();
-                        s.fps = window_frames as f32; // ~0 si no hubo cambios
-                        s.running = true;
-                        s.clone()
-                    };
-                    on_stats(snap);
-                    window_frames = 0;
-                    window_bytes = 0;
-                    window_start = Instant::now();
+            #[cfg(not(windows))]
+            {
+                if backend.is_none() {
+                    eprintln!("[captura] sin backend y sin reserva: se detiene");
+                    break;
                 }
             }
-            Err(CaptureError::AccessLost) => {
-                // Cambio de resolucion / bloqueo de sesion / fullscreen: reintentar.
-                if let Err(e) = backend.reinit() {
-                    eprintln!("[captura] fallo al reinicializar duplicacion: {e:?}");
-                    std::thread::sleep(Duration::from_millis(200));
-                }
-            }
-            Err(CaptureError::Fatal(e)) => {
-                eprintln!("[captura] error fatal: {e}");
-                break;
-            }
+        }
+
+        // Si no hay backend nativo, marca el ritmo aqui (el keepalive GDI va a
+        // ~1.4 fps; sin este sleep el bucle giraria en vacio).
+        if backend.is_none() {
+            std::thread::sleep(Duration::from_millis(120));
         }
     }
 
@@ -211,6 +283,9 @@ fn capture_loop<F>(
 struct CapturedFrame {
     width: u32,
     height: u32,
+    /// Tamano del buffer BGRA (== `backend.buffer().len()`). Se conserva como
+    /// metadato aunque el bucle mida el throughput desde el propio buffer.
+    #[allow(dead_code)]
     bytes: usize,
     /// Regiones (x, y, w, h) que cambiaron desde el frame anterior.
     dirty: Vec<(u32, u32, u32, u32)>,
@@ -490,6 +565,122 @@ mod win {
 
 #[cfg(windows)]
 use win::Backend;
+
+// ===========================================================================
+// Reserva Windows: captura por GDI (BitBlt). Lenta y de pocos fps, pero funciona
+// donde DXGI Desktop Duplication NO: maquinas virtuales, sesiones RDP, equipos
+// sin monitor activo, o mientras DXGI se reinicializa. Ademas garantiza el
+// PRIMER frame nada mas conectar aunque la pantalla este quieta (DXGI no entrega
+// nada si no hay cambios). Modelo "pull": saca el escritorio entero por llamada.
+// ===========================================================================
+#[cfg(windows)]
+mod win_gdi {
+    use super::{CaptureError, CapturedFrame};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::{
+        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
+        GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, ROP_CODE,
+        SRCCOPY,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+
+    // SRCCOPY | CAPTUREBLT. CAPTUREBLT (0x4000_0000) incluye ventanas con capas.
+    const CAPTUREBLT_RAW: u32 = 0x4000_0000;
+
+    pub struct GdiGrabber {
+        /// Buffer BGRA (en realidad BGRX: GDI no rellena alfa) reutilizado.
+        buffer: Vec<u8>,
+    }
+
+    impl GdiGrabber {
+        pub fn new() -> Self {
+            GdiGrabber { buffer: Vec::new() }
+        }
+
+        /// Captura el escritorio primario completo. Devuelve un frame con dirty
+        /// rect = pantalla entera (GDI no informa de regiones cambiadas).
+        pub fn grab(&mut self) -> Result<CapturedFrame, CaptureError> {
+            unsafe {
+                let w = GetSystemMetrics(SM_CXSCREEN);
+                let h = GetSystemMetrics(SM_CYSCREEN);
+                if w <= 0 || h <= 0 {
+                    return Err(CaptureError::Fatal("GDI: dimensiones de pantalla invalidas".into()));
+                }
+
+                let screen_dc = GetDC(HWND::default());
+                if screen_dc.is_invalid() {
+                    return Err(CaptureError::Fatal("GDI: GetDC devolvio nulo".into()));
+                }
+
+                let mem_dc = CreateCompatibleDC(screen_dc);
+                if mem_dc.is_invalid() {
+                    let _ = ReleaseDC(HWND::default(), screen_dc);
+                    return Err(CaptureError::Fatal("GDI: CreateCompatibleDC nulo".into()));
+                }
+                let bmp = CreateCompatibleBitmap(screen_dc, w, h);
+                if bmp.is_invalid() {
+                    let _ = DeleteDC(mem_dc);
+                    let _ = ReleaseDC(HWND::default(), screen_dc);
+                    return Err(CaptureError::Fatal("GDI: CreateCompatibleBitmap nulo".into()));
+                }
+                let old = SelectObject(mem_dc, bmp);
+
+                let blt = BitBlt(
+                    mem_dc, 0, 0, w, h, screen_dc, 0, 0,
+                    ROP_CODE(SRCCOPY.0 | CAPTUREBLT_RAW),
+                );
+
+                let mut bi: BITMAPINFO = std::mem::zeroed();
+                bi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+                bi.bmiHeader.biWidth = w;
+                bi.bmiHeader.biHeight = -h; // negativo = filas de arriba a abajo (top-down)
+                bi.bmiHeader.biPlanes = 1;
+                bi.bmiHeader.biBitCount = 32;
+                bi.bmiHeader.biCompression = 0; // BI_RGB
+
+                let stride = (w as usize) * 4;
+                let need = stride * (h as usize);
+                if self.buffer.len() != need {
+                    self.buffer.resize(need, 0);
+                }
+
+                let lines = GetDIBits(
+                    mem_dc,
+                    bmp,
+                    0,
+                    h as u32,
+                    Some(self.buffer.as_mut_ptr() as *mut core::ffi::c_void),
+                    &mut bi,
+                    DIB_RGB_COLORS,
+                );
+
+                // Limpieza siempre (aunque algo haya fallado antes).
+                let _ = SelectObject(mem_dc, old);
+                let _ = DeleteObject(bmp);
+                let _ = DeleteDC(mem_dc);
+                let _ = ReleaseDC(HWND::default(), screen_dc);
+
+                if blt.is_err() {
+                    return Err(CaptureError::Fatal("GDI: BitBlt fallo".into()));
+                }
+                if lines == 0 {
+                    return Err(CaptureError::Fatal("GDI: GetDIBits copio 0 lineas".into()));
+                }
+
+                Ok(CapturedFrame {
+                    width: w as u32,
+                    height: h as u32,
+                    bytes: self.buffer.len(),
+                    dirty: vec![(0, 0, w as u32, h as u32)],
+                })
+            }
+        }
+
+        pub fn buffer(&self) -> &[u8] {
+            &self.buffer
+        }
+    }
+}
 
 // ===========================================================================
 // Backend macOS: Core Graphics (CGDisplayCreateImage vía CGDisplay::image()).

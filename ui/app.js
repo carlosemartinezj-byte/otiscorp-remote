@@ -54,7 +54,9 @@
       approvalText.textContent =
         `El equipo ${peerLabel} quiere conectarse y controlar esta pantalla` +
         (profile ? ` (perfil ${PROFILE_LABEL[profile] || profile}).` : ".");
-      let secs = 19;
+      // 45s (antes 19): da tiempo a llegar al otro equipo y pulsar Autorizar
+      // cuando pruebas tu solo con dos maquinas.
+      let secs = 45;
       approvalCountdown.textContent = String(secs);
       approvalBackdrop.classList.remove("hidden");
       clearInterval(approvalTimer);
@@ -346,6 +348,9 @@
       onOpen: () => { $("conn-status").textContent = "Conectado (P2P)"; $("conn-loader").classList.add("hidden"); },
       onClose: () => { $("conn-loader").classList.add("hidden"); RemoteSession.close(); },
       onError: (msg) => { $("conn-loader").classList.add("hidden"); toast(msg); RemoteSession.close(); },
+      // Aviso no fatal (p. ej. "conectado pero sin vídeo aún"): informa sin
+      // cerrar la sesión, que puede estar aún negociando ICE por el TURN.
+      onStatus: (msg) => { $("conn-status").textContent = msg; toast(msg); },
     });
   }
 
@@ -909,6 +914,34 @@
       updateNetModeLabel();
       if (url && myDeviceId) OtisRTC.connectSignaling(myDeviceId);
       toast(url ? "Servidor guardado · modo internet" : "Servidor borrado · modo LAN");
+    });
+  }
+
+  // ---- Ajustes: servidores TURN/ICE propios (avanzado) -------------------
+  // Si el vídeo no llega por internet suele ser que el hole punching P2P no
+  // funciona (NAT simétrico / CGNAT) y hace falta un TURN. Aquí se pega el
+  // array `iceServers` en JSON; se AÑADE a los de fábrica. Vacío = solo fábrica.
+  const iceInput = $("ice-url");
+  if (iceInput) {
+    try { iceInput.value = localStorage.getItem("otis_ice") || ""; } catch (_) {}
+  }
+  const iceSave = $("ice-save");
+  if (iceSave) {
+    iceSave.addEventListener("click", () => {
+      const v = (iceInput.value || "").trim();
+      if (!v) {
+        try { localStorage.removeItem("otis_ice"); } catch (_) {}
+        toast("Servidores ICE: usando los de fábrica");
+        return;
+      }
+      try {
+        const parsed = JSON.parse(v);
+        if (!Array.isArray(parsed)) throw new Error("tiene que ser un array");
+        localStorage.setItem("otis_ice", v);
+        toast("Servidores ICE guardados (se aplican en la próxima conexión)");
+      } catch (e) {
+        toast("JSON de ICE inválido: " + e.message);
+      }
     });
   }
 

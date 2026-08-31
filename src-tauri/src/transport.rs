@@ -100,6 +100,22 @@ fn jpeg_quality_for(profile: &str) -> JpegQuality {
     }
 }
 
+/// Calidad para la ruta WebRTC (internet, `LocalFrameSink`). Mas agresiva que la
+/// de LAN: el video va TROCEADO por un data channel y cada frame compite con el
+/// ancho de banda de SUBIDA real del host. Frames mas pequenos = menos trozos =
+/// mas robusto y sin saturar el enlace. Se pierde nitidez pero la imagen llega
+/// fluida en vez de quedarse negra.
+fn jpeg_quality_for_rtc(profile: &str) -> JpegQuality {
+    match profile {
+        // Nitido: resolucion completa, pero calidad/fps contenidos.
+        "sharp" => JpegQuality { jpeg: 68, scale: 1, min_interval: Duration::from_millis(66) },
+        // Equilibrado / Ultraligero: media resolucion (clave para que el JPEG
+        // quepa en pocos KB por internet).
+        "balanced" => JpegQuality { jpeg: 62, scale: 2, min_interval: Duration::from_millis(66) },
+        _ => JpegQuality { jpeg: 55, scale: 2, min_interval: Duration::from_millis(100) },
+    }
+}
+
 /// Reduce la resolucion por muestreo (nearest) a 1/scale. Devuelve (w,h) nuevos.
 fn downscale_into(src: &[u8], w: u32, h: u32, scale: u32, out: &mut Vec<u8>) -> (u32, u32) {
     let w = w as usize;
@@ -551,10 +567,12 @@ impl FrameSink for LocalFrameSink {
 }
 
 /// Crea un sink que emite los frames al propio WebView segun el perfil dado.
+/// Usa la tabla de calidad especifica de WebRTC (frames pequenos para que
+/// quepan troceados en el data channel sin saturar la subida).
 pub fn make_local_sink(app: AppHandle, profile: &str) -> Box<dyn FrameSink> {
     Box::new(LocalFrameSink {
         app,
-        quality: jpeg_quality_for(profile),
+        quality: jpeg_quality_for_rtc(profile),
         last_sent: Instant::now() - Duration::from_secs(1),
         scaled: Vec::new(),
         enc_buf: Vec::new(),

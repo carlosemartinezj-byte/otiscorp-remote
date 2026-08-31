@@ -146,6 +146,19 @@
             <button class="btn btn-primary" id="rv-save" type="button">Guardar</button>
             <span class="tag tag-outline" id="net-mode">Modo LAN (sin servidor)</span>
           </div>
+          <div class="field" style="margin-top:14px">
+            <label for="ice-url">Servidores TURN/ICE propios (avanzado)</label>
+            <input class="input" id="ice-url"
+              placeholder='[{"urls":"turn:mi.turn:3478","username":"u","credential":"p"}]' />
+            <p class="muted" style="font-size:11.5px;margin:6px 0 0">
+              Si el vídeo no llega por internet, casi siempre es que el P2P directo
+              está bloqueado por el NAT y hace falta un TURN. Pega aquí el array
+              <code>iceServers</code> en JSON — se añade a los de fábrica.
+            </p>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;margin-top:8px">
+            <button class="btn btn-secondary" id="ice-save" type="button">Guardar ICE</button>
+          </div>
         </div>
         <div class="blueprint panel" style="max-width:640px;margin-top:16px">
           <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
@@ -219,8 +232,8 @@
       <p class="muted" id="approval-text" style="font-size:13px;margin:8px 0 4px">
         Un equipo quiere conectarse y controlar esta pantalla.
       </p>
-      <p class="muted" style="font-size:12px;margin:0 0 14px">
-        Se rechaza sola en <span id="approval-countdown">20</span>s si no respondes.
+      <p class="muted" id="approval-hint" style="font-size:12px;margin:0 0 14px">
+        Se rechaza sola en <span id="approval-countdown">45</span>s si no respondes.
       </p>
       <div style="display:flex;gap:10px">
         <button class="btn btn-primary" id="approval-accept" type="button">Autorizar</button>
