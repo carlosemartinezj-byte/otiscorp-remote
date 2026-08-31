@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OtisCorp Remote</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500&family=Barlow+Condensed:wght@600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles/app.css" />
+</head>
+<body>
+  <div class="win">
+    <!-- Barra de titulo -->
+    <div class="tbar">
+      <span class="tbrand">OTISCORP</span>
+      <span class="tbar-sub">Remote 2.4 · cliente ligero</span>
+      <div class="wctl">
+        <button id="win-min" title="Minimizar">&#8211;</button>
+        <button id="win-max" title="Maximizar">&#9633;</button>
+        <button id="win-close" class="close" title="Cerrar">&#10005;</button>
+      </div>
+    </div>
+
+    <!-- Pestanas -->
+    <div class="tabs">
+      <button class="tab on" data-tab="connect">Conectar</button>
+      <button class="tab" data-tab="devices">Dispositivos</button>
+      <button class="tab" data-tab="files">Archivos</button>
+      <button class="tab" data-tab="history">Historial</button>
+      <button class="tab" data-tab="settings">Ajustes</button>
+      <div class="tabs-status"><span class="dot"></span><span id="conn-status">En línea · listo</span></div>
+    </div>
+
+    <!-- Franja de diagnostico (datos reales) -->
+    <div class="diag" id="diag-strip">
+      <svg width="14" height="14" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 16h.01"/></svg>
+      <span id="diag-text">Detectando hardware…</span>
+      <span class="net num" id="diag-net"></span>
+    </div>
+
+    <!-- Cuerpo: pantalla Conectar -->
+    <div class="body">
+      <section class="tabpage" data-page="connect">
+        <div class="connect-grid">
+          <!-- 01 / Tu puesto -->
+          <div class="blueprint panel">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div class="k">01 / Tu puesto</div>
+            <div>
+              <div class="field-label">ID de este equipo</div>
+              <div class="id-big num" id="my-id">— — —</div>
+            </div>
+            <div style="display:flex;align-items:flex-end;gap:14px">
+              <div style="flex:1">
+                <div class="field-label">Contraseña de sesión</div>
+                <div class="pw-big num" id="my-pw">— — — —</div>
+              </div>
+              <button class="btn btn-secondary" id="btn-copy" type="button">Copiar</button>
+              <button class="btn btn-secondary" id="btn-regen" type="button">Regenerar</button>
+            </div>
+            <div class="panel-foot">
+              <span class="tag tag-outline" id="unattended-tag">Acceso desatendido activo</span>
+              <span class="muted" style="font-size:11.5px" id="device-line">…</span>
+            </div>
+          </div>
+
+          <!-- 02 / Conectar a -->
+          <div class="blueprint panel">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div class="k">02 / Conectar a</div>
+            <div class="connect-row">
+              <input class="input num connect-input" id="peer-id" inputmode="numeric" placeholder="000 000 000" />
+              <button class="btn btn-primary connect-btn" id="btn-connect" type="button">Conectar</button>
+            </div>
+            <div style="display:flex;align-items:center;gap:14px">
+              <span class="field-label" style="margin:0">Perfil</span>
+              <div class="seg" id="profile-seg">
+                <label class="seg-opt on"><input type="radio" name="profile" value="ultralight" checked />Ultraligero</label>
+                <label class="seg-opt"><input type="radio" name="profile" value="balanced" />Equilibrado</label>
+                <label class="seg-opt"><input type="radio" name="profile" value="sharp" />Nítido</label>
+              </div>
+            </div>
+            <div class="saved-row">
+              <span class="muted" style="font-size:11.5px">Guardados:</span>
+              <span id="saved-quick" style="display:flex;gap:8px;flex-wrap:wrap"></span>
+              <button class="btn btn-ghost" data-tab="devices" style="font-size:12.5px" type="button">ver todos →</button>
+              <button class="btn btn-secondary" id="btn-capture" style="margin-left:auto" type="button">Probar captura</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Pestanas pendientes (siguiente fase: motor de captura + estas vistas) -->
+      <section class="tabpage hidden" data-page="devices">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+          <input class="input" id="dev-search" placeholder="Buscar equipo" style="flex:1" />
+          <input class="input num" id="dev-add-id" inputmode="numeric" placeholder="Añadir por ID" style="width:150px" />
+          <button class="btn btn-secondary" id="dev-add" type="button">+ Añadir</button>
+        </div>
+        <div id="devices-list" class="devices-grid"></div>
+        <div id="devices-empty" class="stub hidden" style="min-height:200px">
+          <div class="k">Sin equipos guardados</div>
+          <div>Cuando conectes a un equipo por su ID, se guardará aquí para la próxima.</div>
+        </div>
+
+        <div class="blueprint panel" style="margin-top:20px">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div style="display:flex;align-items:center;gap:12px">
+            <div class="k" style="flex:1">03 / Dispositivos en tu red WiFi</div>
+            <button class="btn btn-secondary" id="btn-scan-net" type="button">Escanear red</button>
+          </div>
+          <p class="muted" style="font-size:11.5px;margin:0">
+            Lista los equipos conectados a tu misma red local (IP, MAC, fabricante) —
+            la misma información que muestra el panel de tu router. No ve el contenido
+            que consulta cada dispositivo.
+          </p>
+          <div id="netscan-list" class="devices-grid"></div>
+          <div id="netscan-empty" class="stub" style="min-height:120px">
+            <div class="k">Sin escanear</div>
+            <div>Pulsa "Escanear red" para ver qué hay conectado ahora mismo.</div>
+          </div>
+        </div>
+      </section>
+      <section class="tabpage hidden" data-page="files">
+        <div class="stub"><div class="k">Archivos</div><div>Transferencia de archivos — próxima fase.</div></div>
+      </section>
+      <section class="tabpage hidden" data-page="history">
+        <div class="stub"><div class="k">Historial</div><div>Historial de sesiones — próxima fase.</div></div>
+      </section>
+      <section class="tabpage hidden" data-page="settings">
+        <div class="blueprint panel" style="max-width:640px">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div class="k">Conexión por internet (P2P)</div>
+          <p class="muted" style="font-size:12.5px;margin:0">
+            Para conectar fuera de la red local, pega la URL de tu servidor rendezvous
+            (empieza por <code>wss://</code>). Sin ella, la app funciona solo en LAN.
+            El vídeo y el control van cifrados y directos entre los dos equipos; el
+            servidor solo hace de guía para encontrarse.
+          </p>
+          <div class="field">
+            <label for="rv-url">Servidor de señalización</label>
+            <input class="input" id="rv-url" placeholder="wss://mi-servidor.fly.dev" />
+          </div>
+          <div style="display:flex;align-items:center;gap:12px">
+            <button class="btn btn-primary" id="rv-save" type="button">Guardar</button>
+            <span class="tag tag-outline" id="net-mode">Modo LAN (sin servidor)</span>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Barra de estado (metricas reales en vivo) -->
+    <div class="sbar">
+      <span>Cifrado TLS 1.3</span>
+      <span class="num" id="client-metrics">Cliente: — MB RAM · — % CPU</span>
+      <span style="margin-left:auto" id="last-session">Sin sesiones previas</span>
+    </div>
+  </div>
+
+  <!-- Vista de sesion remota (visor): frames + control de raton/teclado -->
+  <div class="remote-view hidden" id="remote-view">
+    <canvas id="remote-canvas" tabindex="0"></canvas>
+    <!-- Barra de control flotante (diseno #2a) -->
+    <div class="session-bar" id="session-bar">
+      <div class="session-bar-row">
+        <span class="session-title" id="session-title">Sesión remota</span>
+        <span class="session-timer num" id="session-timer">00:00</span>
+        <span class="session-metrics num" id="session-metrics">— fps · — ms · — kb/s</span>
+        <div class="session-actions">
+          <button class="btn btn-secondary" id="sb-quality" type="button">Ultraligero</button>
+          <button class="btn btn-secondary" id="sb-input" type="button" title="Bloquear/activar control">Control: on</button>
+          <button class="btn btn-danger" id="sb-end" type="button">Terminar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+  <script src="webrtc.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,30 @@
+# Configuración para desplegar el rendezvous en Fly.io (tiene asignación gratuita).
+# Pasos:
+#   1) Instala flyctl:  https://fly.io/docs/hands-on/install-flyctl/
+#   2) fly auth signup   (o fly auth login)
+#   3) Desde esta carpeta:  fly launch --copy-config --now   (acepta este fly.toml)
+#   4) Tu URL será  https://<app>.fly.dev  → en la app usa  wss://<app>.fly.dev
+#
+# Cambia "app" por un nombre único tuyo.
+app = "otiscorp-rv-8842"
+primary_region = "dfw"   # Dallas (buena latencia para Latinoamérica)
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[http_service.checks]]
+  method = "get"
+  path = "/health"
+  interval = "30s"
+  timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

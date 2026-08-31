@@ -1,0 +1,18 @@
+# Despliegue en Render.com (plan free, SIN tarjeta de crédito).
+# Uso:
+#   1) Sube la carpeta rendezvous/ a un repo de GitHub.
+#   2) En https://render.com → New → Blueprint → conecta ese repo.
+#   3) Render lee este archivo y crea el servicio solo.
+#   4) Tu URL será https://otiscorp-rendezvous.onrender.com
+#      → en la app (Ajustes) usa  wss://otiscorp-rendezvous.onrender.com
+services:
+  - type: web
+    name: otiscorp-rendezvous
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "20"

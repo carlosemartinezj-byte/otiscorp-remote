@@ -1,0 +1,316 @@
+/* ==========================================================================
+   OtisCorp Remote — sistema de diseno "Industry"
+   Tokens tomados 1:1 del design_system (styles.css del handoff).
+   ========================================================================== */
+:root {
+  --color-bg: #f2f2f3;
+  --color-surface: #e9e9ea;
+  --color-text: #1d1f20;
+  --color-accent: #5980a6;
+  --color-accent-2: #728fab;
+  --color-divider: color-mix(in srgb, #1d1f20 16%, transparent);
+
+  --color-neutral-100: #f5f5f8;
+  --color-neutral-200: #e7e7ea;
+  --color-neutral-300: #d4d4d7;
+  --color-neutral-400: #b7b7ba;
+  --color-neutral-500: #98989b;
+  --color-neutral-600: #7a7a7d;
+  --color-neutral-700: #5d5d60;
+  --color-neutral-800: #424244;
+  --color-neutral-900: #2b2b2d;
+
+  --color-accent-100: #eef6ff;
+  --color-accent-200: #d6ebff;
+  --color-accent-300: #b5d9fd;
+  --color-accent-400: #94bce3;
+  --color-accent-500: #749dc4;
+  --color-accent-600: #597ea3;
+  --color-accent-700: #416180;
+  --color-accent-800: #2c455d;
+  --color-accent-900: #1d2d3d;
+
+  --font-heading: "Barlow Condensed", system-ui, sans-serif;
+  --font-heading-weight: 600;
+  --font-body: "Barlow", system-ui, sans-serif;
+
+  --space-1: 3.4px;
+  --space-2: 6.8px;
+  --space-3: 10.2px;
+  --space-4: 13.6px;
+  --space-6: 20.4px;
+  --space-8: 27.2px;
+
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 7px;
+
+  --shadow-sm: 0 1px 2px color-mix(in srgb, #2b2b2d 14%, transparent);
+  --shadow-md: 0 3px 10px color-mix(in srgb, #2b2b2d 16%, transparent);
+  --shadow-lg: 0 12px 32px color-mix(in srgb, #2b2b2d 22%, transparent);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: 14px;
+  -webkit-user-select: none;
+  user-select: none;
+  overflow: hidden;
+}
+
+::selection { background: color-mix(in srgb, var(--color-accent) 30%, transparent); }
+
+a { color: var(--color-accent); text-decoration: none; }
+a:hover { color: var(--color-accent-700); }
+
+svg { stroke-width: 1.5; stroke: currentColor; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+
+:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
+/* ---- Ventana / chrome -------------------------------------------------- */
+.win {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--color-bg);
+  overflow: hidden;
+}
+
+.tbar {
+  flex: none;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 0 0 12px;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-divider);
+  -webkit-app-region: drag;
+}
+.tbrand { font-family: var(--font-heading); font-weight: 600; font-size: 13px; letter-spacing: .22em; }
+.tbar-sub { font-size: 11px; color: color-mix(in srgb, var(--color-text) 45%, transparent); }
+.wctl { margin-left: auto; display: flex; -webkit-app-region: no-drag; }
+.wctl button {
+  width: 34px; height: 31px; display: grid; place-items: center;
+  font-size: 11px; border: 0; background: transparent; cursor: pointer;
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
+.wctl button:hover { background: var(--color-neutral-300); color: var(--color-text); }
+.wctl button.close:hover { background: #c0392b; color: #fff; }
+
+.tabs {
+  flex: none;
+  height: 38px;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--color-divider);
+}
+.tab {
+  display: flex; align-items: center; padding: 0 13px;
+  font-family: var(--font-heading); font-weight: 600; font-size: 14px; letter-spacing: .02em;
+  border-bottom: 2px solid transparent; cursor: pointer;
+  color: color-mix(in srgb, var(--color-text) 62%, transparent);
+  background: transparent; border-top: 0; border-left: 0; border-right: 0;
+}
+.tab:hover { color: var(--color-text); }
+.tab.on { border-bottom-color: var(--color-accent); color: var(--color-text); }
+.tabs-status { margin-left: auto; display: flex; align-items: center; gap: 7px; font-size: 12px; }
+
+/* ---- Franja de diagnostico -------------------------------------------- */
+.diag {
+  flex: none; display: flex; align-items: center; gap: 14px;
+  padding: 9px 28px; border-bottom: 1px solid var(--color-divider);
+  font-size: 12px; color: color-mix(in srgb, var(--color-text) 62%, transparent);
+}
+.diag svg { color: var(--color-accent-700); }
+.diag .net { margin-left: auto; }
+
+/* ---- Barra de estado inferior ----------------------------------------- */
+.sbar {
+  flex: none; height: 27px; display: flex; align-items: center; gap: 20px;
+  padding: 0 12px; border-top: 1px solid var(--color-divider);
+  font-size: 11px; color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
+
+/* ---- Utilidades del sistema ------------------------------------------- */
+.num { font-variant-numeric: tabular-nums; letter-spacing: .01em; }
+.k { font-size: 10px; letter-spacing: .13em; text-transform: uppercase; color: var(--color-accent-700); }
+.muted { color: color-mix(in srgb, var(--color-text) 60%, transparent); }
+.dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--color-accent); display: inline-block; }
+.dot.off { background: var(--color-neutral-400); }
+
+/* ---- Blueprint (marco wireframe con marcas de registro) --------------- */
+.blueprint { position: relative; border: 1px solid var(--color-divider); background: transparent; }
+.corner { position: absolute; width: 9px; height: 9px; pointer-events: none; }
+.corner::before, .corner::after { content: ""; position: absolute; background: var(--color-accent-700); }
+.corner::before { width: 9px; height: 1px; top: 4px; left: 0; }
+.corner::after { width: 1px; height: 9px; left: 4px; top: 0; }
+.corner.tl { top: -1px; left: -1px; }
+.corner.tr { top: -1px; right: -1px; }
+.corner.bl { bottom: -1px; left: -1px; }
+.corner.br { bottom: -1px; right: -1px; }
+
+/* ---- Botones ----------------------------------------------------------- */
+.btn {
+  font-family: var(--font-body); font-size: 13px; font-weight: 500;
+  padding: 7px 14px; border: 1px solid var(--color-divider);
+  background: transparent; color: var(--color-text); cursor: pointer;
+  border-radius: 0; line-height: 1;
+}
+.btn:hover { background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
+.btn:active { background: color-mix(in srgb, var(--color-accent) 18%, transparent); }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn-primary {
+  background: var(--color-accent); color: var(--color-bg); border-color: var(--color-accent);
+}
+.btn-primary:hover { background: var(--color-accent-600); }
+.btn-primary:active { background: var(--color-accent-700); }
+.btn-secondary { background: var(--color-surface); }
+.btn-ghost { border-color: transparent; background: transparent; padding: 7px 8px; color: var(--color-accent-700); }
+.btn-ghost:hover { background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
+.btn-icon { padding: 7px 10px; }
+
+/* ---- Inputs ------------------------------------------------------------ */
+.input {
+  font-family: var(--font-body); font-size: 14px; color: var(--color-text);
+  background: var(--color-surface); border: 1px solid var(--color-divider);
+  padding: 8px 12px; border-radius: 0; outline: none; -webkit-user-select: text; user-select: text;
+}
+.input:focus { border-color: var(--color-accent); }
+.input::placeholder { color: color-mix(in srgb, var(--color-text) 40%, transparent); }
+
+/* ---- Segmented control ------------------------------------------------- */
+.seg { display: inline-flex; border: 1px solid var(--color-divider); }
+.seg-opt {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  padding: 6px 12px; font-size: 13px; cursor: pointer;
+  border-right: 1px solid var(--color-divider);
+  color: color-mix(in srgb, var(--color-text) 70%, transparent);
+}
+.seg-opt:last-child { border-right: 0; }
+.seg-opt input { position: absolute; opacity: 0; pointer-events: none; }
+.seg-opt:hover { background: color-mix(in srgb, var(--color-accent) 8%, transparent); }
+.seg-opt.on { background: var(--color-accent); color: var(--color-bg); }
+
+/* ---- Tags -------------------------------------------------------------- */
+.tag {
+  display: inline-flex; align-items: center; font-size: 11px; padding: 2px 8px;
+  border-radius: 0; line-height: 1.5; letter-spacing: .01em;
+}
+.tag-accent { background: color-mix(in srgb, var(--color-accent) 18%, transparent); color: var(--color-accent-900); }
+.tag-neutral { background: var(--color-neutral-300); color: var(--color-neutral-900); }
+.tag-outline { border: 1px solid var(--color-divider); color: color-mix(in srgb, var(--color-text) 70%, transparent); }
+
+/* ---- Layout de la pantalla Conectar ----------------------------------- */
+.body { flex: 1; overflow: auto; }
+.connect-grid {
+  display: grid; grid-template-columns: 1fr 1.15fr; gap: 28px;
+  padding: 24px 28px 20px; align-content: start; min-height: 100%;
+}
+.panel { padding: 20px 22px; display: flex; flex-direction: column; gap: 14px; }
+
+.field-label { font-size: 12px; color: color-mix(in srgb, var(--color-text) 60%, transparent); margin-bottom: 2px; }
+.id-big {
+  font-family: var(--font-heading); font-weight: 600; font-size: 54px; line-height: 1;
+  letter-spacing: .02em;
+}
+.pw-big { font-family: var(--font-heading); font-size: 26px; letter-spacing: .32em; }
+.panel-foot {
+  margin-top: auto; display: flex; align-items: center; gap: 10px;
+  padding-top: 12px; border-top: 1px solid var(--color-divider);
+}
+.connect-row { display: flex; gap: 10px; }
+.connect-input {
+  flex: 1; height: 56px; font-family: var(--font-heading); font-size: 30px;
+  letter-spacing: .08em; padding: 0 14px;
+}
+.connect-btn { height: 56px; padding: 0 26px; font-size: 17px; }
+.saved-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: auto; padding-top: 12px; border-top: 1px solid var(--color-divider); align-items: center; }
+
+/* Aviso no bloqueante */
+.toast {
+  position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%);
+  background: var(--color-accent-900); color: var(--color-bg);
+  padding: 8px 16px; font-size: 12px; box-shadow: var(--shadow-md);
+  opacity: 0; transition: opacity 90ms linear; pointer-events: none;
+}
+.toast.show { opacity: 1; }
+
+.hidden { display: none !important; }
+
+/* Placeholder para pestanas aun no implementadas */
+.stub {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; color: color-mix(in srgb, var(--color-text) 45%, transparent); text-align: center;
+}
+.stub .k { color: var(--color-accent-700); }
+
+/* ==========================================================================
+   Vista de sesion remota (visor) — overlay a pantalla completa
+   ========================================================================== */
+.remote-view {
+  position: fixed; inset: 0; z-index: 1000;
+  background: #0a0c0e;
+  display: flex; align-items: center; justify-content: center;
+}
+#remote-canvas {
+  width: 100%; height: 100%;
+  object-fit: contain;
+  image-rendering: auto; outline: none; cursor: default;
+  background: #0a0c0e;
+}
+/* Barra de control flotante centrada arriba (diseno #2a) */
+.session-bar {
+  position: fixed; top: var(--space-3); left: 50%; transform: translateX(-50%);
+  z-index: 1001; background: var(--color-bg);
+  border: 1px solid var(--color-divider); box-shadow: var(--shadow-lg);
+  padding: var(--space-2) var(--space-3);
+}
+.session-bar-row { display: flex; align-items: center; gap: var(--space-3); }
+.session-title {
+  font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  font-size: 14px; color: var(--color-text);
+}
+.session-timer { color: var(--color-accent-700); font-size: 13px; }
+.session-metrics {
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
+  font-size: 12px; padding-left: var(--space-3);
+  border-left: 1px solid var(--color-divider);
+}
+.session-actions { display: flex; align-items: center; gap: var(--space-2); margin-left: var(--space-2); }
+.btn-danger {
+  background: var(--color-accent-900); color: var(--color-bg);
+  border-color: var(--color-accent-900);
+}
+.btn-danger:hover { background: #7a1f1f; border-color: #7a1f1f; }
+
+/* ==========================================================================
+   Libreta de dispositivos guardados
+   ========================================================================== */
+.devices-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-4);
+}
+.dev-card {
+  position: relative; border: 1px solid var(--color-divider);
+  padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-2);
+}
+.dev-card .dev-name {
+  font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  font-size: 17px; color: var(--color-text);
+}
+.dev-card .dev-id { font-size: 13px; letter-spacing: 0.04em; color: var(--color-accent-700); }
+.dev-card .dev-meta {
+  font-size: 11.5px; color: color-mix(in srgb, var(--color-text) 45%, transparent);
+}
+.dev-card .dev-actions { display: flex; gap: var(--space-2); margin-top: var(--space-2); }
+.dev-card .dev-actions .btn { font-size: 12.5px; }
+.saved-quick-btn { font-size: 12.5px; }

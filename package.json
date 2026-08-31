@@ -1,0 +1,14 @@
+{
+  "name": "otiscorp-remote",
+  "version": "2.4.0",
+  "private": true,
+  "description": "OtisCorp Remote — cliente de escritorio remoto ligero (Tauri + Rust/windows-rs)",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0"
+  }
+}

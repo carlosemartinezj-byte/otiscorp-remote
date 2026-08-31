@@ -1,0 +1,46 @@
+[package]
+name = "otiscorp-remote"
+version = "2.4.0"
+description = "OtisCorp Remote — cliente de escritorio remoto ligero"
+authors = ["OtisCorp"]
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sysinfo = { version = "0.32", default-features = false, features = ["system"] }
+# Codec ligero para compartir pantalla (MJPEG). jpeg-encoder es Rust puro (sin C).
+jpeg-encoder = "0.6"
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+windows-registry = "0.3"
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.24"
+core-foundation = "0.10"
+
+# Optimizado para un binario pequeno y bajo consumo en reposo.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+incremental = false
