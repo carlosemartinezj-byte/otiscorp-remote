@@ -357,25 +357,12 @@
       $("conn-loader").classList.add("hidden");
       RemoteSession.close();
     }));
-    $("conn-status").textContent = `Conectando a ${label}… (LAN o relay)`;
-    tryConnectPeer(peer, profile, 1);
-  }
-
-  // Llama a connect_peer y, si el host aun no esta registrado en el relay
-  // (NOHOST — pasa unos segundos justo despues de cerrar una sesion previa,
-  // mientras el host se re-registra), reintenta hasta 2 veces.
-  async function tryConnectPeer(peer, profile, attempt) {
     try {
+      $("conn-status").textContent = `Conectando a ${groupId(peer)}… (LAN o relay)`;
       await invoke("connect_peer", { peerId: peer, profile });
       $("conn-status").textContent = "Conectado · esperando autorización del otro equipo…";
       $("conn-loader").classList.add("hidden");
     } catch (e) {
-      const msg = String(e);
-      if (attempt < 3 && /no est[aá] conectado al servidor|NOHOST/i.test(msg)) {
-        $("conn-status").textContent = "El otro equipo aún no responde, reintentando…";
-        setTimeout(() => tryConnectPeer(peer, profile, attempt + 1), 2500);
-        return;
-      }
       toast("No se pudo conectar: " + e);
       $("conn-loader").classList.add("hidden");
       RemoteSession.close();
