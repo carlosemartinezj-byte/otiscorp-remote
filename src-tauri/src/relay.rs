@@ -13,7 +13,7 @@
 //! conexion directa a un peer.
 
 use std::io::{self, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -63,12 +63,43 @@ fn tls_connect(cmd: &str, id: &str) -> io::Result<Tls> {
     let conn = rustls::ClientConnection::new(tls_config(), server_name)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("TLS: {e}")))?;
 
-    let sock = TcpStream::connect((host.as_str(), port))?;
+    let sock = connect_relay(&host, port)?;
     tune_relay_socket(&sock);
     let mut tls = rustls::StreamOwned::new(conn, sock);
     tls.write_all(format!("{cmd} {id}\n").as_bytes())?;
     tls.flush()?;
     Ok(tls)
+}
+
+/// Abre el socket TCP al relay probando **IPv4 antes que IPv6**, con timeout
+/// corto por direccion.
+///
+/// `otiscorp-relay.fly.dev` resuelve a IPv6 **y** IPv4. Muchas maquinas Windows
+/// tienen IPv6 "configurado" pero sin ruta real, y `TcpStream::connect` (que no
+/// hace Happy Eyeballs) se queda ~20 s colgado en la direccion IPv6 muerta antes
+/// de probar la IPv4 que si funciona -> el usuario ve "no se pudo conectar".
+fn connect_relay(host: &str, port: u16) -> io::Result<TcpStream> {
+    let all: Vec<SocketAddr> = (host, port).to_socket_addrs()?.collect();
+    if all.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "el DNS no devolvio ninguna direccion para el relay",
+        ));
+    }
+    let ordered = all
+        .iter()
+        .filter(|a| a.is_ipv4())
+        .chain(all.iter().filter(|a| a.is_ipv6()));
+
+    let mut last_err = None;
+    for addr in ordered {
+        match TcpStream::connect_timeout(addr, Duration::from_secs(8)) {
+            Ok(s) => return Ok(s),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err
+        .unwrap_or_else(|| io::Error::new(io::ErrorKind::Other, "no se pudo abrir la conexion al relay")))
 }
 
 /// Lee bytes hasta encontrar '\n'. Devuelve (linea_sin_\n, sobrante_tras_\n).
@@ -129,7 +160,9 @@ pub fn host_tunnel_timeout(id: &str, timeout: Duration) -> io::Result<TcpStream>
 /// Lado VISOR: pide al relay conectar con `id`. Devuelve un `TcpStream`
 /// (loopback) equivalente a haber conectado directo al host.
 pub fn viewer_tunnel(id: &str) -> Result<TcpStream, String> {
-    let mut tls = tls_connect("JOIN", id).map_err(|e| format!("No se pudo contactar el servidor: {e}"))?;
+    let mut tls = tls_connect("JOIN", id).map_err(|e| {
+        format!("No se pudo contactar el servidor del relay ({e}). ¿Sin internet, o un antivirus/firewall bloqueando OtisCorp?")
+    })?;
     let (line, _) = read_line(&mut tls).map_err(|e| format!("relay: {e}"))?;
     match line.as_str() {
         "OK" => bridge(tls).map_err(|e| format!("puente: {e}")),
