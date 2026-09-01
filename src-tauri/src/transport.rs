@@ -946,16 +946,23 @@ impl Transport {
     fn relay_host_loop(self: Arc<Self>, app: AppHandle, id: String, capture: Arc<CaptureEngine>) {
         let video_id = format!("{id}0");
         let input_id = format!("{id}1");
+        // Se re-registra cada 45 s si nadie ha conectado: asi la conexion al
+        // relay nunca esta parada lo bastante para que un NAT/router la tire.
+        const REREGISTER_EVERY: Duration = Duration::from_secs(45);
         loop {
             let app_reg = app.clone();
             let vid = video_id.clone();
-            match crate::relay::host_tunnel(&video_id, move || {
+            match crate::relay::host_wait_peer(&video_id, REREGISTER_EVERY, move || {
                 let _ = app_reg.emit(
                     "relay-host-status",
                     serde_json::json!({ "ok": true, "id": vid }),
                 );
             }) {
-                Ok(video_stream) => {
+                Ok(crate::relay::HostWait::NoViewer) => {
+                    // Nadie conecto en 45s: el bucle re-registra (conexion fresca).
+                    continue;
+                }
+                Ok(crate::relay::HostWait::Peer(video_stream)) => {
                     if self.incoming_active.swap(true, Ordering::SeqCst) {
                         let _ = video_stream.shutdown(std::net::Shutdown::Both);
                         continue;

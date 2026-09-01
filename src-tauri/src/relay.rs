@@ -134,25 +134,74 @@ fn read_line(tls: &mut Tls) -> io::Result<(String, Vec<u8>)> {
     Ok((String::from_utf8_lossy(&acc).trim().to_string(), Vec::new()))
 }
 
-/// Lado HOST: registra este equipo en el relay y ESPERA (bloquea) hasta que un
-/// visor se conecte. Cuando llega, devuelve un `TcpStream` (loopback) que actua
-/// como la conexion de sesion entrante, equivalente a un `accept()` directo.
+/// Resultado de esperar un visor como HOST.
+pub enum HostWait {
+    /// Un visor hizo JOIN: aqui esta el tunel de sesion (loopback).
+    Peer(TcpStream),
+    /// Nadie conecto en el plazo dado. Hay que re-registrarse.
+    NoViewer,
+}
+
+/// Lado HOST: registra este equipo en el relay y espera un visor **como mucho
+/// `wait`**. Si nadie conecta, devuelve `NoViewer` para que el llamante cierre y
+/// se re-registre.
 ///
-/// `on_registered` se llama justo cuando el relay ya nos tiene apuntados (tras el
-/// handshake, antes de bloquear esperando "PEER") — la UI lo usa para mostrar
-/// "Relay: conectado".
-pub fn host_tunnel(id: &str, on_registered: impl FnOnce()) -> io::Result<TcpStream> {
+/// Por que con plazo: una conexion parada esperando "PEER" sin ningun byte
+/// yendo y viniendo la mata cualquier NAT/CGNAT/router domestico a los pocos
+/// minutos, y el host NO se entera (sigue bloqueado en un socket muerto) mientras
+/// el relay ya lo descarto -> el visor recibe "El equipo no esta conectado".
+/// Re-registrarse cada `wait` mantiene la conexion siempre "fresca".
+///
+/// `on_registered` se llama en cuanto el relay ya nos tiene apuntados (la UI lo
+/// usa para "Relay: conectado").
+pub fn host_wait_peer(
+    id: &str,
+    wait: Duration,
+    on_registered: impl FnOnce(),
+) -> io::Result<HostWait> {
     let mut tls = tls_connect("HOST", id)?;
     on_registered();
-    // Espera la senal "PEER" del relay (llega cuando un visor hace JOIN).
-    let (line, _) = read_line(&mut tls)?;
+    tls.get_ref().set_read_timeout(Some(wait)).ok();
+
+    let mut acc: Vec<u8> = Vec::with_capacity(8);
+    let mut byte = [0u8; 1];
+    loop {
+        match tls.read(&mut byte) {
+            Ok(0) => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "relay cerro")),
+            Ok(_) => {
+                if byte[0] == b'\n' {
+                    break;
+                }
+                acc.push(byte[0]);
+                if acc.len() > 16 {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "respuesta larga"));
+                }
+                // Ya esta llegando la respuesta: plazo corto para terminarla.
+                tls.get_ref()
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .ok();
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
+                if acc.is_empty() {
+                    // Nadie hizo JOIN en `wait`: cerramos y el bucle re-registra.
+                    let _ = tls.get_ref().shutdown(std::net::Shutdown::Both);
+                    return Ok(HostWait::NoViewer);
+                }
+                return Err(e); // respuesta a medias (raro)
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    tls.get_ref().set_read_timeout(None).ok();
+
+    let line = String::from_utf8_lossy(&acc).trim().to_string();
     if line != "PEER" {
         return Err(io::Error::new(
             io::ErrorKind::Other,
             format!("respuesta inesperada del relay: {line}"),
         ));
     }
-    bridge(tls)
+    Ok(HostWait::Peer(bridge(tls)?))
 }
 
 /// Igual que `host_tunnel`, pero con un plazo maximo de espera por el visor.
