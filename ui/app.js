@@ -75,17 +75,16 @@
   $("approval-accept").addEventListener("click", () => finishApproval(true));
   $("approval-reject").addEventListener("click", () => finishApproval(false));
 
-  // Camino P2P: webrtc.js pide la decision antes de contestar la oferta.
+  // Acceso desatendido: las conexiones entrantes se ACEPTAN solas, sin diálogo.
+  // (El backend también lo hace por su lado; esto cubre el camino WebRTC.)
+  // El equipo controlado ve la barra "Te están controlando · Terminar".
   if (window.OtisRTC) {
-    OtisRTC.setApprovalHandler((peerId, profile) => requestApproval(groupId(peerId), profile));
+    OtisRTC.setApprovalHandler(() => Promise.resolve(true));
   }
-
-  // Camino LAN: el backend emite el evento y espera el comando de vuelta.
-  listen("incoming-request", (e) => {
-    const { peer, profile } = e.payload || {};
-    requestApproval(peer || "desconocido", profile).then((accept) => {
-      invoke("respond_incoming", { accept });
-    });
+  // Por si el backend pidiera autorización (AUTO_ACCEPT_INCOMING = false):
+  // se responde que sí automáticamente.
+  listen("incoming-request", () => {
+    invoke("respond_incoming", { accept: true });
   });
 
   // ---- Barra "te estan controlando" (lado host, ambos transportes) --------

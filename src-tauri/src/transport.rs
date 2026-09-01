@@ -864,6 +864,11 @@ pub struct Transport {
 
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// Acceso desatendido: aceptar automaticamente las conexiones entrantes (sin
+/// dialogo de "Autorizar"). El equipo controlado sigue viendo la barra
+/// "Te estan controlando · Terminar".
+const AUTO_ACCEPT_INCOMING: bool = true;
+
 struct ViewerHandle {
     input_write: TcpStream, // handle de escritura del canal de entrada
     video_kill: TcpStream, // solo para poder cerrar el canal de video al desconectar
@@ -1061,21 +1066,28 @@ impl Transport {
             Err(_) => return,
         };
 
-        // Pide autorizacion al usuario de este equipo antes de compartir nada.
-        // Si no responde en 20s, se rechaza sola (evita quedar esperando para
-        // siempre a un usuario que no esta presente).
         let peer = input_stream
             .peer_addr()
             .map(|a| a.ip().to_string())
             .unwrap_or_default();
-        let (tx, rx) = std::sync::mpsc::channel::<bool>();
-        *self.pending_decision.lock().unwrap() = Some(tx);
-        let _ = app.emit(
-            "incoming-request",
-            serde_json::json!({ "peer": peer, "profile": profile }),
-        );
-        let accepted = rx.recv_timeout(APPROVAL_TIMEOUT).unwrap_or(false);
-        *self.pending_decision.lock().unwrap() = None;
+
+        // Acceso desatendido: la conexion se ACEPTA sola, sin dialogo de
+        // "Autorizar". El equipo controlado ve igualmente la barra "Te estan
+        // controlando · Terminar" para cortarla cuando quiera. Poner
+        // `AUTO_ACCEPT_INCOMING = false` para volver a pedir autorizacion.
+        let accepted = if AUTO_ACCEPT_INCOMING {
+            true
+        } else {
+            let (tx, rx) = std::sync::mpsc::channel::<bool>();
+            *self.pending_decision.lock().unwrap() = Some(tx);
+            let _ = app.emit(
+                "incoming-request",
+                serde_json::json!({ "peer": peer, "profile": profile }),
+            );
+            let a = rx.recv_timeout(APPROVAL_TIMEOUT).unwrap_or(false);
+            *self.pending_decision.lock().unwrap() = None;
+            a
+        };
         let _ = app.emit("incoming-request-resolved", serde_json::json!({ "accepted": accepted }));
         if !accepted {
             let _ = write_msg(&mut input_write, MSG_INPUT, br#"{"t":"rejected"}"#);
