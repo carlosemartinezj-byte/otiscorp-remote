@@ -138,16 +138,20 @@ struct JpegQuality {
     min_interval: Duration,
 }
 
+/// Envio por CELDAS (solo lo que cambia de la pantalla): mejor en teoria, pero
+/// nunca se llego a validar bien. Desactivado -> MJPEG de frame completo, que es
+/// lo que funcionaba de forma estable.
+const TILES_ENABLED: bool = false;
+
 fn jpeg_quality_for(profile: &str) -> JpegQuality {
     match profile {
-        // Con envio por celdas, la resolucion completa ya sale barata: solo se
-        // manda lo que cambia. "Nitido" y "Equilibrado" van los dos a resolucion
-        // nativa y se diferencian en la calidad del JPEG.
-        "sharp" => JpegQuality { jpeg: 80, scale: 1, min_interval: Duration::from_millis(25) },
-        "balanced" => JpegQuality { jpeg: 68, scale: 1, min_interval: Duration::from_millis(30) },
-        // Ultraligero: media resolucion (sigue el camino de frame completo, sin
-        // celdas). Para enlaces muy flojos / CPUs muy justas.
-        _ => JpegQuality { jpeg: 58, scale: 2, min_interval: Duration::from_millis(40) },
+        // Nitido: resolucion completa. Solo va bien en LAN o subida buena.
+        "sharp" => JpegQuality { jpeg: 75, scale: 1, min_interval: Duration::from_millis(33) },
+        // Equilibrado (por defecto): MEDIA resolucion -> JPEG ~4x menor, fluido
+        // por el relay. Es el ajuste que dio ~20 fps utilizables.
+        "balanced" => JpegQuality { jpeg: 62, scale: 2, min_interval: Duration::from_millis(33) },
+        // Ultraligero: 1/3 de resolucion, para enlaces flojos / CPUs muy justas.
+        _ => JpegQuality { jpeg: 52, scale: 3, min_interval: Duration::from_millis(40) },
     }
 }
 
@@ -292,16 +296,21 @@ impl FrameSink for JpegSender {
             return;
         }
 
-        // ---- Ultraligero: frame completo a media resolucion, sin celdas ----
-        if self.quality.scale > 1 {
+        // ---- MJPEG de frame completo (celdas desactivadas, o perfil con escala) ----
+        if !TILES_ENABLED || self.quality.scale > 1 {
             if self.last_sent.elapsed() < self.quality.min_interval || self.queue.is_busy() {
                 return;
             }
-            let (sw, sh) =
-                downscale_into(bgra, width, height, self.quality.scale, &mut self.scaled);
-            let scaled = std::mem::take(&mut self.scaled);
-            let ok = self.encode_into_buf(sw, sh, &scaled);
-            self.scaled = scaled;
+            let (sw, sh, ok) = if self.quality.scale > 1 {
+                let (sw, sh) =
+                    downscale_into(bgra, width, height, self.quality.scale, &mut self.scaled);
+                let scaled = std::mem::take(&mut self.scaled);
+                let ok = self.encode_into_buf(sw, sh, &scaled);
+                self.scaled = scaled;
+                (sw, sh, ok)
+            } else {
+                (width, height, self.encode_into_buf(width, height, bgra))
+            };
             if !ok {
                 return;
             }
