@@ -14,6 +14,15 @@ primary_region = "dfw"
   auto_start_machines = true
   min_machines_running = 1
 
+  # UNA sola maquina, a proposito: el mapa `hosts` vive en el proceso. Con 2+
+  # maquinas el HOST se registra en una y el JOIN cae en otra -> "El equipo no
+  # esta conectado al servidor" intermitente. Limites altos para que Fly NO
+  # arranque una segunda maquina por numero de conexiones.
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 2000
+    soft_limit = 1800
+
   [[services.ports]]
     port = 443
     handlers = ["tls"]
@@ -29,4 +38,4 @@ primary_region = "dfw"
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "256mb"
+  memory = "512mb"

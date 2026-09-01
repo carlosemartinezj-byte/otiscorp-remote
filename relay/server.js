@@ -19,6 +19,8 @@ const net = require('net');
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const MAX_LINE = 64; // el handshake es corto; corta a clientes basura
+const HANDSHAKE_TIMEOUT_MS = 20000; // sin "HOST/JOIN\n" en 20s -> fuera
+const KEEPALIVE_MS = 25000; // sonda TCP: detecta peers muertos y mantiene vivo el NAT
 
 // id -> socket del host en espera
 const hosts = new Map();
@@ -33,8 +35,22 @@ function validId(id) {
 
 const server = net.createServer((sock) => {
   sock.setNoDelay(true);
+  // Keepalive: si el host se queda esperando "PEER" sin trafico, esto mantiene
+  // viva la asignacion NAT del cliente y detecta si de verdad se cayo (en vez de
+  // dejar un socket muerto ocupando sitio en el Map de hosts).
+  sock.setKeepAlive(true, KEEPALIVE_MS);
+
   let buf = Buffer.alloc(0);
   let handshaked = false;
+
+  // Medio-conexiones (TLS a medias, escaneos, health checks colgados) no pueden
+  // acumularse: si no completan el handshake pronto, se cierran.
+  const hsTimer = setTimeout(() => {
+    if (!handshaked) {
+      log('handshake no completado, cerrando');
+      sock.destroy();
+    }
+  }, HANDSHAKE_TIMEOUT_MS);
 
   const onData = (chunk) => {
     if (handshaked) return; // ya entubado; el pipe se encarga
@@ -47,10 +63,12 @@ const server = net.createServer((sock) => {
     const line = buf.slice(0, nl).toString('utf8').trim();
     const rest = buf.slice(nl + 1); // posibles bytes de sesion ya recibidos
     handshaked = true;
+    clearTimeout(hsTimer);
     sock.removeListener('data', onData);
     handleCommand(sock, line, rest);
   };
   sock.on('data', onData);
+  sock.on('close', () => clearTimeout(hsTimer));
 
   sock.on('error', () => { /* se limpia en 'close' */ });
 });
@@ -67,12 +85,12 @@ function handleCommand(sock, line, rest) {
 
   if (cmd === 'HOST') {
     const prev = hosts.get(id);
-    if (prev && !prev.destroyed) prev.destroy();
+    if (prev && prev !== sock && !prev.destroyed) prev.destroy();
     hosts.set(id, sock);
-    log('HOST registrado', id);
+    log('HOST registrado', id, '(hosts activos:', hosts.size + ')');
     sock.on('close', () => {
       if (hosts.get(id) === sock) hosts.delete(id);
-      log('HOST desconectado', id);
+      log('HOST desconectado', id, '(hosts activos:', hosts.size + ')');
     });
     // El host espera; no reenviamos "rest" (no deberia haber datos aun).
     return;
@@ -98,7 +116,10 @@ function handleCommand(sock, line, rest) {
 
 // Puente transparente bidireccional entre host y viewer.
 function pipePair(host, viewer, id, viewerRest) {
+  let closed = false;
   const close = () => {
+    if (closed) return;
+    closed = true;
     if (!host.destroyed) host.destroy();
     if (!viewer.destroyed) viewer.destroy();
     log('sesion cerrada', id);
@@ -119,6 +140,11 @@ server.on('error', (e) => {
   log('error del servidor', e.message);
   process.exit(1);
 });
+
+// Un error suelto (socket que revienta en un momento raro) NO debe tumbar el
+// relay entero y cortarle la sesion a todo el mundo.
+process.on('uncaughtException', (e) => log('uncaughtException:', (e && e.message) || e));
+process.on('unhandledRejection', (e) => log('unhandledRejection:', (e && e.message) || e));
 
 server.listen(PORT, '0.0.0.0', () => {
   log('OtisCorp relay escuchando en', PORT);
