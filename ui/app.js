@@ -357,12 +357,25 @@
       $("conn-loader").classList.add("hidden");
       RemoteSession.close();
     }));
+    $("conn-status").textContent = `Conectando a ${label}… (LAN o relay)`;
+    tryConnectPeer(peer, profile, 1);
+  }
+
+  // Llama a connect_peer y, si sale NOHOST (el host puede estar re-registrandose
+  // en el relay tras cerrarse una sesion o tras un corte), reintenta un par de
+  // veces antes de rendirse.
+  async function tryConnectPeer(peer, profile, attempt) {
     try {
-      $("conn-status").textContent = `Conectando a ${groupId(peer)}… (LAN o relay)`;
       await invoke("connect_peer", { peerId: peer, profile });
       $("conn-status").textContent = "Conectado · esperando autorización del otro equipo…";
       $("conn-loader").classList.add("hidden");
     } catch (e) {
+      const msg = String(e);
+      if (attempt < 4 && /no est[aá] conectado al servidor|NOHOST/i.test(msg)) {
+        $("conn-status").textContent = `El otro equipo aún no responde, reintentando (${attempt}/3)…`;
+        setTimeout(() => tryConnectPeer(peer, profile, attempt + 1), 3000);
+        return;
+      }
       toast("No se pudo conectar: " + e);
       $("conn-loader").classList.add("hidden");
       RemoteSession.close();
@@ -814,6 +827,22 @@
     if (!s.running) return;
     $("diag-net").textContent =
       `Captura: ${Math.round(s.fps)} fps · ${s.width}×${s.height} · ${s.raw_mb_per_s.toFixed(1)} MB/s (crudo)`;
+  });
+
+  // Estado del registro en el relay (para PODER controlar ESTE equipo por ID
+  // desde fuera de la red local). Si sale "sin conexión", este equipo no es
+  // alcanzable por internet y el otro verá "El equipo no está conectado".
+  listen("relay-host-status", (event) => {
+    const p = event.payload || {};
+    const el = $("relay-status");
+    if (!el) return;
+    if (p.ok) {
+      el.textContent = "Relay: conectado ✓";
+      el.style.color = "#5fbf7a";
+    } else {
+      el.textContent = "Relay: SIN conexión" + (p.msg ? " — " + p.msg : "");
+      el.style.color = "#e08a8a";
+    }
   });
 
   // Formatea el ID remoto mientras se escribe. Si lleva un punto, es una IP

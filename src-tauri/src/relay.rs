@@ -31,13 +31,25 @@ fn relay_target() -> (String, u16) {
 
 type Tls = rustls::StreamOwned<rustls::ClientConnection, TcpStream>;
 
-/// Buffers de socket pequenos en el puente del relay: igual que en `transport`,
-/// evita que se apilen frames de video en vuelo (retraso de segundos).
+/// Buffers de socket pequenos en el puente del relay (evita que se apilen frames
+/// en vuelo) + KEEPALIVE TCP.
+///
+/// El keepalive es clave para el registro del host: `host_tunnel` se queda
+/// bloqueado leyendo, esperando "PEER", con CERO trafico. Cualquier NAT/CGNAT
+/// domestico tira esa conexion inactiva a los pocos minutos, y el host NO se
+/// entera (sigue bloqueado en un socket muerto) mientras el relay ya no lo tiene
+/// -> el visor recibe NOHOST hasta reiniciar la app. Con keepalive el SO manda
+/// una sonda cada 10 s: mantiene viva la asignacion NAT y, si de verdad se
+/// cayo, la lectura falla en ~40 s y `relay_host_loop` se re-registra solo.
 fn tune_relay_socket(stream: &TcpStream) {
     let s = socket2::SockRef::from(stream);
     let _ = s.set_nodelay(true);
     let _ = s.set_send_buffer_size(96 * 1024);
     let _ = s.set_recv_buffer_size(96 * 1024);
+    let ka = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(15))
+        .with_interval(Duration::from_secs(10));
+    let _ = s.set_tcp_keepalive(&ka);
 }
 
 /// Construye la config TLS con las raices publicas (webpki-roots) y el proveedor
@@ -125,8 +137,13 @@ fn read_line(tls: &mut Tls) -> io::Result<(String, Vec<u8>)> {
 /// Lado HOST: registra este equipo en el relay y ESPERA (bloquea) hasta que un
 /// visor se conecte. Cuando llega, devuelve un `TcpStream` (loopback) que actua
 /// como la conexion de sesion entrante, equivalente a un `accept()` directo.
-pub fn host_tunnel(id: &str) -> io::Result<TcpStream> {
+///
+/// `on_registered` se llama justo cuando el relay ya nos tiene apuntados (tras el
+/// handshake, antes de bloquear esperando "PEER") — la UI lo usa para mostrar
+/// "Relay: conectado".
+pub fn host_tunnel(id: &str, on_registered: impl FnOnce()) -> io::Result<TcpStream> {
     let mut tls = tls_connect("HOST", id)?;
+    on_registered();
     // Espera la senal "PEER" del relay (llega cuando un visor hace JOIN).
     let (line, _) = read_line(&mut tls)?;
     if line != "PEER" {

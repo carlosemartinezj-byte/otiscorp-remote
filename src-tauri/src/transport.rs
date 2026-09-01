@@ -66,6 +66,10 @@ pub(crate) fn tune_video_socket(stream: &TcpStream, send: bool, recv: bool) {
     if recv {
         let _ = s.set_recv_buffer_size(VIDEO_SOCK_BUF);
     }
+    let ka = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(15))
+        .with_interval(Duration::from_secs(10));
+    let _ = s.set_tcp_keepalive(&ka);
 }
 
 /// H.264 (Media Foundation) da mejor calidad por bit, pero depende de que el MFT
@@ -938,7 +942,14 @@ impl Transport {
         let video_id = format!("{id}0");
         let input_id = format!("{id}1");
         loop {
-            match crate::relay::host_tunnel(&video_id) {
+            let app_reg = app.clone();
+            let vid = video_id.clone();
+            match crate::relay::host_tunnel(&video_id, move || {
+                let _ = app_reg.emit(
+                    "relay-host-status",
+                    serde_json::json!({ "ok": true, "id": vid }),
+                );
+            }) {
                 Ok(video_stream) => {
                     if self.incoming_active.swap(true, Ordering::SeqCst) {
                         let _ = video_stream.shutdown(std::net::Shutdown::Both);
@@ -961,6 +972,10 @@ impl Transport {
                 Err(e) => {
                     // Relay no disponible o conexion caida: reintenta con calma.
                     eprintln!("[relay-host] {e}");
+                    let _ = app.emit(
+                        "relay-host-status",
+                        serde_json::json!({ "ok": false, "msg": e.to_string() }),
+                    );
                     std::thread::sleep(Duration::from_secs(3));
                 }
             }
