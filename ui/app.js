@@ -28,6 +28,18 @@
 
   // ---- Toast no bloqueante ------------------------------------------------
   let toastTimer = null;
+  // El estado de "Conectando.../reintentando..." vive en #conn-status (la
+  // franja de arriba), pero en cuanto se abre la sesion la pantalla de
+  // carga (#connect-loading) tapa TODA la ventana, incluida esa franja --
+  // sin esto, los reintentos seguian corriendo por detras pero se veian
+  // "congelados" (el usuario solo veia "Conectando..." fijo, sin saber si
+  // seguia buscando o se habia trabado). Actualiza los dos a la vez.
+  function setConnStatus(msg) {
+    $("conn-status").textContent = msg;
+    const lt = $("connect-loading-text");
+    if (lt) lt.textContent = msg;
+  }
+
   function toast(msg) {
     const el = $("toast");
     el.textContent = msg;
@@ -79,6 +91,8 @@
   function showConnectLoading() {
     const el = $("connect-loading");
     if (el) el.classList.remove("hidden");
+    const lt = $("connect-loading-text");
+    if (lt) lt.textContent = "Conectando…"; // reset: no arrastrar un "reintentando X/11" viejo
   }
   function hideConnectLoading() {
     const el = $("connect-loading");
@@ -350,7 +364,7 @@
       Devices.upsert(peer, null, profile);
       Devices.renderAll();
     }
-    $("conn-status").textContent = `Conectando a ${isIp ? peer : groupId(peer)}…`;
+    setConnStatus(`Conectando a ${isIp ? peer : groupId(peer)}…`);
     $("conn-loader").classList.remove("hidden");
     if (isIp) { connectViaLan(peer, profile); return; } // IP local => directo, sin relay
     // Transporte por defecto: NATIVO del backend — descubrimiento LAN si el
@@ -407,7 +421,7 @@
       $("conn-loader").classList.add("hidden");
       RemoteSession.close();
     }));
-    $("conn-status").textContent = `Conectando a ${label}… (LAN o relay)`;
+    setConnStatus(`Conectando a ${label}… (LAN o relay)`);
     tryConnectPeer(peer, profile, 1);
   }
 
@@ -423,7 +437,7 @@
     if (!RemoteSession.isActive()) return;
     try {
       await invoke("connect_peer", { peerId: peer, profile });
-      $("conn-status").textContent = "Conectado · esperando autorización del otro equipo…";
+      setConnStatus("Conectado · esperando autorización del otro equipo…");
       $("conn-loader").classList.add("hidden");
     } catch (e) {
       const msg = String(e);
@@ -435,7 +449,7 @@
       // con margen, antes de darse por vencido de verdad.
       const MAX_ATTEMPTS = 12;
       if (attempt < MAX_ATTEMPTS && /no est[aá] conectado al servidor|NOHOST/i.test(msg)) {
-        $("conn-status").textContent = `El otro equipo aún no responde, reintentando (${attempt}/${MAX_ATTEMPTS - 1})…`;
+        setConnStatus(`El otro equipo aún no responde, reintentando (${attempt}/${MAX_ATTEMPTS - 1})…`);
         setTimeout(() => tryConnectPeer(peer, profile, attempt + 1), 4000);
         return;
       }
@@ -455,12 +469,12 @@
     OtisRTC.connect(peer, profile, {
       onFrame: (bmp) => RemoteSession.drawBitmap(bmp),
       onMetrics: (m) => RemoteSession.setMetrics(m),
-      onOpen: () => { $("conn-status").textContent = "Conectado (P2P)"; $("conn-loader").classList.add("hidden"); },
+      onOpen: () => { setConnStatus("Conectado (P2P)"); $("conn-loader").classList.add("hidden"); },
       onClose: () => { $("conn-loader").classList.add("hidden"); RemoteSession.close(); },
       onError: (msg) => { $("conn-loader").classList.add("hidden"); toast(msg); RemoteSession.close(); },
       // Aviso no fatal (p. ej. "conectado pero sin vídeo aún"): informa sin
       // cerrar la sesión, que puede estar aún negociando ICE por el TURN.
-      onStatus: (msg) => { $("conn-status").textContent = msg; toast(msg); },
+      onStatus: (msg) => { setConnStatus(msg); toast(msg); },
     });
   }
 
