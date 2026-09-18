@@ -37,14 +37,22 @@
   }
 
   // Sonido de conexion: suena en las DOS puntas (quien la manda y quien la
-  // recibe), ver los dos puntos donde se llama mas abajo. `currentTime = 0`
-  // primero por si sonara de nuevo antes de terminar (conectar/reconectar
-  // rapido) -- que arranque de cero, no que se pise con la cola de antes.
-  // Los navegadores bloquean el autoplay CON SONIDO si el usuario nunca
-  // interactuo con la pagina; para cuando esto suena ya hubo al menos un
-  // clic (en "Conectar", o el propio arranque de una sesion entrante), asi
-  // que no deberia toparse con eso -- igual el catch es silencioso por las
-  // dudas (mejor sesion sin sonido que un error en consola).
+  // recibe), ver los puntos donde se llama mas abajo. Es un AVISO de que se
+  // esta conectando, no el soundtrack de toda la sesion -- se corta solo:
+  //   - el visor lo corta apenas llega el primer frame de verdad (ahi si
+  //     esta "conectado" de forma inequivoca, ver drawH264/drawJpegB64/
+  //     drawJpegTiles);
+  //   - por las dudas (y para el lado host, que no tiene un "primer frame"
+  //     tan facil de enganchar desde el frontend), un techo de 6s que lo
+  //     corta solo si nadie lo corto antes.
+  // `currentTime = 0` primero por si sonara de nuevo antes de terminar
+  // (conectar/reconectar rapido) -- que arranque de cero, no que se pise
+  // con la cola de antes. Los navegadores bloquean el autoplay CON SONIDO
+  // si el usuario nunca interactuo con la pagina; para cuando esto suena ya
+  // hubo al menos un clic (en "Conectar", o el propio arranque de una
+  // sesion entrante), asi que no deberia toparse con eso -- igual el catch
+  // es silencioso por las dudas (mejor sesion sin sonido que un error).
+  let connectSoundTimer = null;
   function playConnectSound() {
     const el = $("connect-sound");
     if (!el) return;
@@ -52,6 +60,15 @@
       el.currentTime = 0;
       el.play().catch(() => {});
     } catch (_) {}
+    clearTimeout(connectSoundTimer);
+    connectSoundTimer = setTimeout(stopConnectSound, 6000);
+  }
+  function stopConnectSound() {
+    clearTimeout(connectSoundTimer);
+    connectSoundTimer = null;
+    const el = $("connect-sound");
+    if (!el) return;
+    try { el.pause(); } catch (_) {}
   }
 
   // ---- Autorizacion de conexiones entrantes --------------------------------
@@ -118,6 +135,7 @@
   function hideHostBar() {
     hostBarMode = null;
     hostBar.classList.add("hidden");
+    stopConnectSound(); // lado host: se corta tambien al desconectar
   }
   listen("incoming-session-started", (e) => showHostBar("lan", (e.payload || {}).peer));
   listen("incoming-session-ended", () => { if (hostBarMode === "lan") hideHostBar(); });
@@ -480,6 +498,7 @@
     // Pinta un frame H.264 (Annex B en base64) del camino LAN/internet TCP.
     function drawH264(b64, w, h, keyframe) {
       if (!active) return;
+      stopConnectSound(); // primer frame de verdad = ya esta conectado
       if (typeof VideoDecoder === "undefined") {
         // WebView2 demasiado antiguo para WebCodecs: no hay como decodificar.
         return;
@@ -556,6 +575,7 @@
     let jpegDecoding = false;
     async function drawJpegB64(b64, w, h) {
       if (!active || jpegDecoding) return;
+      stopConnectSound(); // primer frame de verdad = ya esta conectado
       jpegDecoding = true;
       try {
         const bin = atob(b64);
@@ -583,6 +603,7 @@
     let tilesInFlight = false, tilesPending = null;
     function drawJpegTiles(b64, fullW, fullH, keyframe) {
       if (!active) return;
+      stopConnectSound(); // primer frame de verdad = ya esta conectado
       if (tilesInFlight) { tilesPending = [b64, fullW, fullH, keyframe]; return; }
       tilesInFlight = true;
       paintTiles(b64, fullW, fullH, keyframe).catch(() => {}).then(() => {
@@ -800,6 +821,7 @@
       if (!active && view.classList.contains("hidden")) return;
       saveThumbnail();
       active = false;
+      stopConnectSound(); // lado visor: se corta tambien al desconectar
       clearInterval(timerId);
       closeH264Decoder();
       if (driver) { try { driver.close(); } catch (_) {} driver = null; }
