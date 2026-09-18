@@ -80,7 +80,16 @@
     connectSoundTimer = null;
     const el = $("connect-sound");
     if (el) { try { el.pause(); } catch (_) {} }
-    hideConnectLoading(); // mismo momento: ya esta conectado de verdad
+    // OJO: NO llamar hideConnectLoading() aca. El sonido tiene su propio
+    // techo de 6s para no sonar los 2 minutos enteros si nadie contesta --
+    // pero eso no significa que la conexion ya se resolvio (los reintentos
+    // siguen corriendo hasta ~48s, ver tryConnectPeer). Estaban acoplados
+    // por error: a los 6s se apagaba la pantalla de carga aunque siguiera
+    // buscando, y el usuario se quedaba viendo el lienzo negro PELADO (sin
+    // spinner ni texto) el resto de la espera, como si se hubiera trabado.
+    // hideConnectLoading() ahora se llama aparte, solo donde de verdad
+    // corresponde: primer frame real (drawH264/drawJpegB64/drawJpegTiles) o
+    // fin de sesion (close()).
   }
 
   // Overlay de "Conectando..." sobre el lienzo del visor (tapa el negro/
@@ -539,7 +548,7 @@
     // Pinta un frame H.264 (Annex B en base64) del camino LAN/internet TCP.
     function drawH264(b64, w, h, keyframe) {
       if (!active) return;
-      stopConnectSound(); // primer frame de verdad = ya esta conectado
+      stopConnectSound(); hideConnectLoading(); // primer frame de verdad = ya esta conectado
       if (typeof VideoDecoder === "undefined") {
         // WebView2 demasiado antiguo para WebCodecs: no hay como decodificar.
         return;
@@ -603,6 +612,7 @@
     // Pinta un ImageBitmap (camino WebRTC).
     function drawBitmap(bitmap) {
       if (!active) return;
+      stopConnectSound(); hideConnectLoading(); // primer frame de verdad = ya esta conectado (WebRTC)
       if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
         canvas.width = bitmap.width; canvas.height = bitmap.height;
       }
@@ -617,7 +627,7 @@
     let jpegDecoding = false;
     async function drawJpegB64(b64, w, h) {
       if (!active || jpegDecoding) return;
-      stopConnectSound(); // primer frame de verdad = ya esta conectado
+      stopConnectSound(); hideConnectLoading(); // primer frame de verdad = ya esta conectado
       jpegDecoding = true;
       try {
         const bin = atob(b64);
@@ -645,7 +655,7 @@
     let tilesInFlight = false, tilesPending = null;
     function drawJpegTiles(b64, fullW, fullH, keyframe) {
       if (!active) return;
-      stopConnectSound(); // primer frame de verdad = ya esta conectado
+      stopConnectSound(); hideConnectLoading(); // primer frame de verdad = ya esta conectado
       if (tilesInFlight) { tilesPending = [b64, fullW, fullH, keyframe]; return; }
       tilesInFlight = true;
       paintTiles(b64, fullW, fullH, keyframe).catch(() => {}).then(() => {
@@ -863,7 +873,7 @@
       if (!active && view.classList.contains("hidden")) return;
       saveThumbnail();
       active = false;
-      stopConnectSound(); // lado visor: se corta tambien al desconectar
+      stopConnectSound(); hideConnectLoading(); // lado visor: se corta tambien al desconectar
       clearInterval(timerId);
       closeH264Decoder();
       if (driver) { try { driver.close(); } catch (_) {} driver = null; }
