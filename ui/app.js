@@ -49,14 +49,20 @@
   }
 
   // Sonido de conexion: suena en las DOS puntas (quien la manda y quien la
-  // recibe), ver los puntos donde se llama mas abajo. Es un AVISO de que se
-  // esta conectando, no el soundtrack de toda la sesion -- se corta solo:
+  // recibe), como el tono de una llamada -- tiene que sonar mientras se
+  // sigue intentando, no un "ding" corto. Se corta solo:
   //   - el visor lo corta apenas llega el primer frame de verdad (ahi si
   //     esta "conectado" de forma inequivoca, ver drawH264/drawJpegB64/
-  //     drawJpegTiles);
-  //   - por las dudas (y para el lado host, que no tiene un "primer frame"
-  //     tan facil de enganchar desde el frontend), un techo de 6s que lo
-  //     corta solo si nadie lo corto antes.
+  //     drawJpegTiles/drawBitmap);
+  //   - al cancelar/desconectar (close());
+  //   - cuando se agotan los reintentos (tryConnectPeer llama a close() al
+  //     rendirse, asi que tambien cae en el punto anterior).
+  // Nada de eso pasa antes de ~48s en el peor caso (el techo de reintentos,
+  // ver tryConnectPeer/MAX_ATTEMPTS) -- por eso el techo de seguridad de
+  // aca abajo es 60s, no unos pocos segundos: es solo una red de seguridad
+  // para el caso raro de que ninguno de los puntos de arriba dispare (por
+  // ejemplo el lado host, que no tiene un "primer frame" tan facil de
+  // enganchar desde el frontend), nunca el mecanismo normal de corte.
   // `currentTime = 0` primero por si sonara de nuevo antes de terminar
   // (conectar/reconectar rapido) -- que arranque de cero, no que se pise
   // con la cola de antes. Los navegadores bloquean el autoplay CON SONIDO
@@ -73,7 +79,7 @@
       el.play().catch(() => {});
     } catch (_) {}
     clearTimeout(connectSoundTimer);
-    connectSoundTimer = setTimeout(stopConnectSound, 6000);
+    connectSoundTimer = setTimeout(stopConnectSound, 60000);
   }
   function stopConnectSound() {
     clearTimeout(connectSoundTimer);
