@@ -312,6 +312,13 @@ svg { stroke-width: 1.5; stroke: currentColor; fill: none; stroke-linecap: round
   font-size: 12.5px;
 }
 .host-bar.hidden { display: none; }
+/* Defensivo: en uso real esto nunca pasa (un equipo es host O visor en un
+   momento dado, nunca las dos cosas en la misma ventana a la vez) -- pero
+   en auto-prueba en loopback (ver sesion de hoy) la MISMA ventana es host
+   y visor al mismo tiempo, y esta barra flotante (z-index 1500) terminaba
+   tapando la barra de sesion (z-index 1001) de abajo. La bajamos un poco
+   para que se apilen en vez de superponerse. */
+.remote-view:not(.hidden) ~ .host-bar { top: 54px; }
 .dot-live { background: #c0392b; animation: dotpulse 1.4s infinite; }
 @keyframes dotpulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 
@@ -341,6 +348,24 @@ svg { stroke-width: 1.5; stroke: currentColor; fill: none; stroke-linecap: round
   object-fit: contain;
   image-rendering: auto; outline: none; cursor: default;
   background: #0a0c0e;
+}
+/* Overlay de "Conectando...": tapa el lienzo (que hasta el primer frame
+   esta vacio/negro) con una animacion fluida en vez de dejar ver la nada.
+   `app.js` le agrega/quita `.hidden` -- se pone al abrir la sesion, se saca
+   sola en cuanto llega el primer frame de verdad (mismo punto donde se
+   corta el sonido de conexion, ver stopConnectSound). */
+.connect-loading {
+  position: absolute; inset: 0; z-index: 1002;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: var(--space-4);
+  background: #0a0c0e;
+  transition: opacity 220ms ease;
+}
+.connect-loading.hidden { opacity: 0; pointer-events: none; }
+.connect-loading .loader-bars { margin: 0; }
+.connect-loading-text, .connect-loading .k {
+  color: color-mix(in srgb, #fff 78%, transparent);
+  letter-spacing: .16em;
 }
 /* Barra de sesion: overlay flotante sobre el lienzo (estilo AnyDesk en
    pantalla completa), NO una toolbar que empuja el contenido. El lienzo
@@ -408,37 +433,62 @@ svg { stroke-width: 1.5; stroke: currentColor; fill: none; stroke-linecap: round
    Libreta de dispositivos guardados
    ========================================================================== */
 .devices-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: var(--space-4);
 }
+/* Galeria tipo "libreta de dispositivos" (referencia: AnyDesk/RustDesk) --
+   cada tarjeta es sobre todo la miniatura, con lo demas superpuesto encima
+   en vez de apilado en una lista de texto debajo. Sin captura todavia, un
+   degradé de color propio de ESE equipo (por su ID, siempre el mismo, ver
+   thumbGradientFor en app.js) en vez de un cuadro gris muerto -- se siente
+   vivo y colorido de entrada, como la galeria de referencia. */
 .dev-card {
   position: relative; border: 1px solid var(--color-divider);
-  padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-2);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  display: flex; flex-direction: column;
+  transition: transform 140ms ease, box-shadow 140ms ease;
 }
+.dev-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
 .dev-card .dev-thumb {
-  order: -2; aspect-ratio: 16/9; background: #0a0c0e;
-  border: 1px solid var(--color-divider); overflow: hidden;
+  aspect-ratio: 4/3; background: #0a0c0e;
+  overflow: hidden; position: relative;
   display: flex; align-items: center; justify-content: center;
 }
 .dev-card .dev-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .dev-card .dev-thumb-empty {
-  font-size: 11px; color: color-mix(in srgb, var(--color-text) 35%, transparent);
+  width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; color: color-mix(in srgb, #fff 75%, transparent);
 }
+/* Punto de estado: insignia flotando sobre la esquina de la miniatura, no
+   una linea de texto aparte -- de un vistazo, como semaforo. */
 .dev-card .dev-status {
-  display: flex; align-items: center; gap: 6px; font-size: 11px;
-  color: color-mix(in srgb, var(--color-text) 50%, transparent);
-  order: -1;
+  position: absolute; top: 8px; right: 8px;
+  display: flex; align-items: center; gap: 5px;
+  background: color-mix(in srgb, #0a0c0e 72%, transparent);
+  padding: 3px 8px; border-radius: 999px;
+  font-size: 10.5px; color: #fff;
+  backdrop-filter: blur(4px);
 }
-.dev-card .dev-status .dot { background: #2e8b57; }
-.dev-card .dev-status .dot.off { background: var(--color-neutral-400); }
+.dev-card .dev-status .dot { background: #2e8b57; box-shadow: 0 0 0 2px color-mix(in srgb, #2e8b57 30%, transparent); }
+.dev-card .dev-status .dot.off { background: var(--color-neutral-400); box-shadow: none; }
+.dev-card .dev-body {
+  padding: var(--space-3) var(--space-3) var(--space-4);
+  display: flex; flex-direction: column; gap: 2px;
+  background: var(--color-bg);
+}
 .dev-card .dev-name {
   font-family: var(--font-heading); font-weight: var(--font-heading-weight);
-  font-size: 17px; color: var(--color-text);
+  font-size: 16px; color: var(--color-text);
 }
-.dev-card .dev-id { font-size: 13px; letter-spacing: 0.04em; color: var(--color-accent-700); }
+.dev-card .dev-id { font-size: 12.5px; letter-spacing: 0.04em; color: var(--color-accent-700); }
 .dev-card .dev-meta {
-  font-size: 11.5px; color: color-mix(in srgb, var(--color-text) 45%, transparent);
+  font-size: 11px; color: color-mix(in srgb, var(--color-text) 45%, transparent);
+  margin-bottom: var(--space-2);
 }
-.dev-card .dev-actions { display: flex; gap: var(--space-2); margin-top: var(--space-2); }
-.dev-card .dev-actions .btn { font-size: 12.5px; }
+.dev-card .dev-actions { display: flex; gap: 6px; }
+.dev-card .dev-actions .btn { font-size: 12px; padding: 7px 8px; }
+.dev-card .dev-actions .btn-primary { flex: 1.3; }
+.dev-card .dev-actions .btn-secondary, .dev-card .dev-actions .btn-ghost { flex: 1; }
 .saved-quick-btn { font-size: 12.5px; }

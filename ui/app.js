@@ -67,8 +67,22 @@
     clearTimeout(connectSoundTimer);
     connectSoundTimer = null;
     const el = $("connect-sound");
-    if (!el) return;
-    try { el.pause(); } catch (_) {}
+    if (el) { try { el.pause(); } catch (_) {} }
+    hideConnectLoading(); // mismo momento: ya esta conectado de verdad
+  }
+
+  // Overlay de "Conectando..." sobre el lienzo del visor (tapa el negro/
+  // vacio de antes del primer frame). Solo aplica al lado visor -- el host
+  // no tiene lienzo que tapar, por eso showConnectLoading() se llama nada
+  // mas desde RemoteSession.open(), pero hideConnectLoading() es seguro
+  // llamarlo desde cualquier lado (si el elemento nunca se mostro, no-op).
+  function showConnectLoading() {
+    const el = $("connect-loading");
+    if (el) el.classList.remove("hidden");
+  }
+  function hideConnectLoading() {
+    const el = $("connect-loading");
+    if (el) el.classList.add("hidden");
   }
 
   // ---- Autorizacion de conexiones entrantes --------------------------------
@@ -401,15 +415,28 @@
   // en el relay tras cerrarse una sesion o tras un corte), reintenta un par de
   // veces antes de rendirse.
   async function tryConnectPeer(peer, profile, attempt) {
+    // Si mientras tanto se cancelo (boton "Cancelar" de la pantalla de
+    // carga, o "Terminar"), no seguir intentando -- sin esto, un reintento
+    // ya programado (setTimeout de mas abajo) podia disparar 4s despues de
+    // cancelar y reconectar solo, dejando al usuario sin forma real de
+    // frenarlo.
+    if (!RemoteSession.isActive()) return;
     try {
       await invoke("connect_peer", { peerId: peer, profile });
       $("conn-status").textContent = "Conectado · esperando autorización del otro equipo…";
       $("conn-loader").classList.add("hidden");
     } catch (e) {
       const msg = String(e);
-      if (attempt < 4 && /no est[aá] conectado al servidor|NOHOST/i.test(msg)) {
-        $("conn-status").textContent = `El otro equipo aún no responde, reintentando (${attempt}/3)…`;
-        setTimeout(() => tryConnectPeer(peer, profile, attempt + 1), 3000);
+      // Antes se rendia a los ~9s (3 reintentos de 3s) -- muy poco: el host
+      // se re-registra en el relay cada 45s (ver REREGISTER_EVERY en
+      // transport.rs), asi que si el intento le pega justo entre medio de
+      // un ciclo, 9s no alcanzan a esperar el siguiente. Ahora reintenta
+      // hasta ~48s en total (12 intentos de 4s), cubriendo un ciclo entero
+      // con margen, antes de darse por vencido de verdad.
+      const MAX_ATTEMPTS = 12;
+      if (attempt < MAX_ATTEMPTS && /no est[aá] conectado al servidor|NOHOST/i.test(msg)) {
+        $("conn-status").textContent = `El otro equipo aún no responde, reintentando (${attempt}/${MAX_ATTEMPTS - 1})…`;
+        setTimeout(() => tryConnectPeer(peer, profile, attempt + 1), 4000);
         return;
       }
       toast("No se pudo conectar: " + e);
@@ -546,6 +573,7 @@
       $("sb-input").textContent = "Control: on";
       showBar(); // cada sesion nueva arranca con la barra visible
       playConnectSound(); // lado visor: suena al mandar la conexion
+      showConnectLoading(); // tapa el lienzo negro hasta el primer frame real
       startTs = Date.now();
       clearInterval(timerId);
       timerId = setInterval(() => {
@@ -833,6 +861,11 @@
     }
 
     $("sb-end").addEventListener("click", close);
+    // Cancelar mientras se esta conectando: mismo cierre que "Terminar" --
+    // corta el intento en curso (incluidos los reintentos de hasta ~48s) en
+    // vez de dejar al usuario atrapado esperando sin salida.
+    const cancelBtn = $("connect-loading-cancel");
+    if (cancelBtn) cancelBtn.addEventListener("click", close);
     $("sb-input").addEventListener("click", () => {
       controlOn = !controlOn;
       $("sb-input").textContent = "Control: " + (controlOn ? "on" : "off");
@@ -987,6 +1020,17 @@
     return Promise.all(checks).then((results) => results.some(Boolean));
   }
 
+  // Degrade de color propio de un equipo (por su ID, siempre el mismo) para
+  // la miniatura de la libreta cuando todavia no hay captura guardada --
+  // que se sienta vivo/colorido de entrada, no un cuadro gris muerto.
+  function thumbGradientFor(id) {
+    let h = 0;
+    for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+    const hue1 = h % 360;
+    const hue2 = (hue1 + 42) % 360;
+    return `linear-gradient(135deg, hsl(${hue1} 55% 30%), hsl(${hue2} 55% 18%))`;
+  }
+
   const Devices = (function () {
     const KEY = "otis_devices";
     const THUMB_KEY = "otis_thumbs";
@@ -1070,18 +1114,19 @@
 
       list.forEach((d) => {
         const card = document.createElement("div");
-        card.className = "blueprint dev-card";
+        card.className = "dev-card";
         const thumb = getThumbnail(d.id);
         card.innerHTML =
-          '<i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>' +
           (thumb
             ? `<div class="dev-thumb"><img src="${thumb}" alt="" /></div>`
-            : `<div class="dev-thumb dev-thumb-empty">sin captura aún</div>`) +
+            : `<div class="dev-thumb dev-thumb-empty" style="background:${thumbGradientFor(d.id)}">sin captura aún</div>`) +
           `<div class="dev-status"><span class="dot off"></span><span class="dev-status-text">comprobando…</span></div>` +
+          `<div class="dev-body">` +
           `<div class="dev-name"></div>` +
           `<div class="dev-id num"></div>` +
           `<div class="dev-meta">Perfil: ${PROFILE_LABEL[d.profile] || "Ultraligero"}</div>` +
-          `<div class="dev-actions"></div>`;
+          `<div class="dev-actions"></div>` +
+          `</div>`;
         card.querySelector(".dev-name").textContent = d.alias;
         card.querySelector(".dev-id").textContent = groupId(d.id);
         checkDeviceOnline(d.id).then((online) => {

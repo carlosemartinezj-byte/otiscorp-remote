@@ -1269,10 +1269,13 @@ impl Transport {
         // esta en la LAN, se conecta por el relay (fuera de la red local).
         let (video_stream, input_stream) = match resolve_peer(peer_id) {
             Some(video_addr) => {
-                let video = TcpStream::connect_timeout(&video_addr, Duration::from_secs(5))
+                // 10s en vez de 5: en una LAN casera con el equipo recien
+                // saliendo de suspension, o un Wi-Fi flojo, 5s a veces no
+                // alcanzaba y cortaba de mas antes de tiempo.
+                let video = TcpStream::connect_timeout(&video_addr, Duration::from_secs(10))
                     .map_err(|e| format!("No se pudo conectar: {e}"))?;
                 let input_addr = SocketAddr::new(video_addr.ip(), INPUT_PORT);
-                let input = TcpStream::connect_timeout(&input_addr, Duration::from_secs(5))
+                let input = TcpStream::connect_timeout(&input_addr, Duration::from_secs(10))
                     .map_err(|e| format!("No se pudo conectar (entrada): {e}"))?;
                 (video, input)
             }
