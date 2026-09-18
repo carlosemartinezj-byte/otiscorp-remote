@@ -342,13 +342,32 @@ svg { stroke-width: 1.5; stroke: currentColor; fill: none; stroke-linecap: round
   image-rendering: auto; outline: none; cursor: default;
   background: #0a0c0e;
 }
-/* Barra de sesion: toolbar superior de ancho completo (estilo AnyDesk) */
+/* Barra de sesion: overlay flotante sobre el lienzo (estilo AnyDesk en
+   pantalla completa), NO una toolbar que empuja el contenido. El lienzo
+   ocupa el 100% del espacio (ver `#remote-canvas` mas arriba, ya sin
+   padding-top que le robara sitio): esta barra flota encima, SOLIDA -- el
+   mismo tratamiento que ya usa `.tbar` (la barra de titulo de la ventana:
+   var(--color-surface) + borde inferior, sin cristal ni blur) para que la
+   sesion remota se sienta parte de la misma app, no un overlay ajeno -- y
+   se retira sola cuando no hace falta. `.session-bar--hidden` la sube y la
+   apaga (app.js la alterna con un timer de inactividad del mouse); el
+   hover/focus la trae de vuelta SIEMPRE, aunque JS le haya puesto --hidden,
+   para que nunca quede atrapada fuera de alcance. */
 .session-bar {
   position: fixed; top: 0; left: 0; right: 0;
-  z-index: 1001; background: var(--color-bg);
+  z-index: 1001;
+  background: var(--color-surface);
   border-bottom: 1px solid var(--color-divider); box-shadow: var(--shadow-lg);
   padding: var(--space-2) var(--space-3);
   display: flex; align-items: center; gap: var(--space-3);
+  transform: translateY(0); opacity: 1;
+  transition: transform 160ms ease, opacity 160ms ease;
+}
+.session-bar.session-bar--hidden {
+  transform: translateY(-100%); opacity: 0; pointer-events: none;
+}
+.session-bar:hover, .session-bar:focus-within {
+  transform: translateY(0); opacity: 1; pointer-events: auto;
 }
 .session-title {
   font-family: var(--font-heading); font-weight: var(--font-heading-weight);
@@ -360,10 +379,25 @@ svg { stroke-width: 1.5; stroke: currentColor; fill: none; stroke-linecap: round
   font-size: 12px; padding-left: var(--space-3);
   border-left: 1px solid var(--color-divider);
 }
-.session-actions { display: flex; align-items: center; gap: var(--space-2); margin-left: auto; }
+.session-actions { display: flex; align-items: center; gap: var(--space-2); margin-left: auto; position: relative; }
 .session-wctl { margin-left: var(--space-3); padding-left: var(--space-3); border-left: 1px solid var(--color-divider); }
-/* El lienzo debe dejar espacio para la toolbar fija arriba */
-.remote-view { padding-top: 46px; box-sizing: border-box; }
+
+/* Menu de calidad (boton "sb-quality" dentro de la barra de sesion): mismo
+   look que el segmented control de "Conectar a", pero como popover que cae
+   por debajo del boton en vez de estar siempre visible en linea. */
+.quality-menu {
+  position: absolute; top: calc(100% + 6px); left: 0;
+  background: var(--color-bg); border: 1px solid var(--color-divider);
+  box-shadow: var(--shadow-lg); min-width: 148px; z-index: 1002;
+}
+.quality-menu.hidden { display: none; }
+.quality-opt {
+  display: block; width: 100%; text-align: left; border: 0; background: none;
+  padding: 8px 12px; font-size: 13px; font-family: var(--font-body);
+  color: var(--color-text); cursor: pointer;
+}
+.quality-opt:hover { background: color-mix(in srgb, var(--color-accent) 8%, transparent); }
+.quality-opt.on { background: var(--color-accent); color: var(--color-bg); }
 .btn-danger {
   background: var(--color-accent-900); color: var(--color-bg);
   border-color: var(--color-accent-900);

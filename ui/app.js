@@ -411,6 +411,7 @@
     let active = false, controlOn = true, startTs = 0, timerId = null;
     let driver = null;
     let sessionPeerId = "";
+    let currentProfile = "ultralight";
 
     // ---- Decodificador H.264 (WebCodecs) para el camino LAN/internet por TCP.
     // El backend manda Annex B (start codes, SPS/PPS delante de cada keyframe);
@@ -503,8 +504,9 @@
       tilesInFlight = false; tilesPending = null; jpegDecoding = false;
       view.classList.remove("hidden");
       $("session-title").textContent = title;
-      $("sb-quality").textContent = PROFILE_LABEL[profile] || "Ultraligero";
+      setQualityLabel(profile || "ultralight");
       $("sb-input").textContent = "Control: on";
+      showBar(); // cada sesion nueva arranca con la barra visible
       startTs = Date.now();
       clearInterval(timerId);
       timerId = setInterval(() => {
@@ -632,6 +634,14 @@
       if (!controlOn || !active || !driver) return;
       try { driver.sendInput(evt); } catch (_) {}
     }
+    // Mensajes de sesion (cambio de calidad, keyframe...) van por el mismo
+    // canal que raton/teclado, pero NO dependen de "Control: on/off" -- ese
+    // interruptor bloquea la entrada que se inyecta en el equipo remoto, no
+    // tiene nada que ver con poder ajustar la calidad de lo que se ve.
+    function sendSessionMsg(evt) {
+      if (!active || !driver) return;
+      try { driver.sendInput(evt); } catch (_) {}
+    }
 
     const BTN = { 0: "left", 1: "middle", 2: "right" };
     // El raton dispara 100-200 mousemove/s; enviarlos todos satura el canal de
@@ -699,6 +709,73 @@
       } catch (_) { /* canvas vacio o tainted: sin miniatura, no es grave */ }
     }
 
+    // ---- Auto-hide de la barra de sesion -------------------------------
+    // Como en cualquier reproductor de video a pantalla completa: se retira
+    // sola tras un rato sin mover el mouse (para no tapar el escritorio
+    // remoto todo el tiempo) y vuelve en cuanto se mueve el mouse. Mientras
+    // el mouse esta ENCIMA de la barra (o del menu de calidad, que cuelga de
+    // ella) el CSS la obliga a quedarse visible con :hover/:focus-within,
+    // pase lo que pase con esta clase -- por eso nunca se queda "atrapada"
+    // fuera de alcance a medio ocultar.
+    const sessionBarEl = $("session-bar");
+    let hideBarTimer = null;
+    function showBar() {
+      sessionBarEl.classList.remove("session-bar--hidden");
+      cancelHideBar();
+      hideBarTimer = setTimeout(() => {
+        hideBarTimer = null;
+        if (sessionBarEl.matches(":hover")) return; // se esta usando, no ocultar
+        sessionBarEl.classList.add("session-bar--hidden");
+      }, 2500);
+    }
+    function cancelHideBar() {
+      if (hideBarTimer) { clearTimeout(hideBarTimer); hideBarTimer = null; }
+    }
+    view.addEventListener("mousemove", showBar);
+
+    // ---- Menu de calidad -------------------------------------------------
+    // Cambia el perfil de video EN CALIENTE, sin cortar la sesion: el host
+    // recrea el encoder con la calidad nueva y manda una keyframe (mensaje
+    // "set_profile", ver transport.rs). Antes "sb-quality" solo mostraba el
+    // perfil con el que se conecto -- el click no hacia nada.
+    function setQualityLabel(profile) {
+      currentProfile = profile;
+      $("sb-quality").textContent = PROFILE_LABEL[profile] || "Ultraligero";
+      document.querySelectorAll("#quality-menu .quality-opt").forEach((opt) => {
+        opt.classList.toggle("on", opt.dataset.profile === profile);
+      });
+    }
+    function closeQualityMenu() {
+      $("quality-menu").classList.add("hidden");
+      $("sb-quality").setAttribute("aria-expanded", "false");
+    }
+    $("sb-quality").addEventListener("click", (e) => {
+      e.stopPropagation();
+      const menu = $("quality-menu");
+      const willOpen = menu.classList.contains("hidden");
+      menu.classList.toggle("hidden", !willOpen);
+      $("sb-quality").setAttribute("aria-expanded", String(willOpen));
+    });
+    document.querySelectorAll("#quality-menu .quality-opt").forEach((opt) => {
+      opt.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const profile = opt.dataset.profile;
+        closeQualityMenu();
+        if (profile === currentProfile) return;
+        setQualityLabel(profile);
+        sendSessionMsg({ t: "set_profile", profile });
+        toast("Calidad: " + (PROFILE_LABEL[profile] || profile));
+      });
+    });
+    // Cerrar el menu al hacer click fuera (pero no al hacer click en el
+    // propio boton, que ya se encarga de abrir/cerrar).
+    document.addEventListener("mousedown", (e) => {
+      const menu = $("quality-menu");
+      if (menu.classList.contains("hidden")) return;
+      if (e.target === $("sb-quality") || menu.contains(e.target)) return;
+      closeQualityMenu();
+    });
+
     function close() {
       if (!active && view.classList.contains("hidden")) return;
       saveThumbnail();
@@ -707,6 +784,8 @@
       closeH264Decoder();
       if (driver) { try { driver.close(); } catch (_) {} driver = null; }
       view.classList.add("hidden");
+      closeQualityMenu();
+      cancelHideBar();
       $("conn-status").textContent = "En línea · listo";
       if (currentWindow) { currentWindow.setFullscreen(false).catch(() => {}); }
     }

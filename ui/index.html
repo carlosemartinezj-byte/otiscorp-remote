@@ -191,7 +191,14 @@
       <span class="session-timer num" id="session-timer">00:00</span>
       <span class="session-metrics num" id="session-metrics">— fps · — ms · — kb/s</span>
       <div class="session-actions">
-        <button class="btn btn-secondary" id="sb-quality" type="button">Ultraligero</button>
+        <div style="position:relative">
+          <button class="btn btn-secondary" id="sb-quality" type="button" title="Cambiar calidad de imagen" aria-haspopup="true" aria-expanded="false">Ultraligero</button>
+          <div class="quality-menu hidden" id="quality-menu" role="menu">
+            <button class="quality-opt" type="button" data-profile="ultralight" role="menuitem">Ultraligero</button>
+            <button class="quality-opt" type="button" data-profile="balanced" role="menuitem">Equilibrado</button>
+            <button class="quality-opt" type="button" data-profile="sharp" role="menuitem">Nítido</button>
+          </div>
+        </div>
         <button class="btn btn-secondary" id="sb-input" type="button" title="Bloquear/activar control">Control: on</button>
         <button class="btn btn-secondary" id="sb-fullscreen" type="button" title="Pantalla completa">Pantalla completa</button>
         <button class="btn btn-secondary" id="sb-screenshot" type="button" title="Guardar una captura del escritorio remoto">Captura</button>

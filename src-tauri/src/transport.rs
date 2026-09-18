@@ -146,12 +146,16 @@ const TILES_ENABLED: bool = false;
 fn jpeg_quality_for(profile: &str) -> JpegQuality {
     match profile {
         // Nitido: resolucion completa. Solo va bien en LAN o subida buena.
-        "sharp" => JpegQuality { jpeg: 75, scale: 1, min_interval: Duration::from_millis(33) },
+        // Calidad JPEG subida (75->82): menos bloques de compresion, a costa
+        // de frames algo mas pesados -- este camino solo se usa si el equipo
+        // no tiene encoder H.264 (caso raro en Windows 8+).
+        "sharp" => JpegQuality { jpeg: 82, scale: 1, min_interval: Duration::from_millis(33) },
         // Equilibrado (por defecto): MEDIA resolucion -> JPEG ~4x menor, fluido
         // por el relay. Es el ajuste que dio ~20 fps utilizables.
-        "balanced" => JpegQuality { jpeg: 62, scale: 2, min_interval: Duration::from_millis(33) },
+        "balanced" => JpegQuality { jpeg: 70, scale: 2, min_interval: Duration::from_millis(33) },
         // Ultraligero: 1/3 de resolucion, para enlaces flojos / CPUs muy justas.
-        _ => JpegQuality { jpeg: 52, scale: 3, min_interval: Duration::from_millis(40) },
+        // Subida chica a proposito, ver nota igual en video_quality_for.
+        _ => JpegQuality { jpeg: 58, scale: 3, min_interval: Duration::from_millis(40) },
     }
 }
 
@@ -215,6 +219,8 @@ struct JpegSender {
     queue: Arc<FrameQueue>,
     alive: Arc<AtomicBool>,
     quality: JpegQuality,
+    // Mismo mecanismo que en H264Sender: ver su comentario.
+    pending_profile: Arc<Mutex<Option<String>>>,
     last_sent: Instant,
     last_keyframe: Instant,
     // Dimensiones del ultimo frame visto (para detectar cambio de resolucion).
@@ -234,13 +240,19 @@ struct JpegSender {
 }
 
 impl JpegSender {
-    fn new(stream: TcpStream, quality: JpegQuality, alive: Arc<AtomicBool>) -> Self {
+    fn new(
+        stream: TcpStream,
+        quality: JpegQuality,
+        alive: Arc<AtomicBool>,
+        pending_profile: Arc<Mutex<Option<String>>>,
+    ) -> Self {
         let queue = FrameQueue::new();
         spawn_simple_frame_writer(stream, queue.clone(), alive.clone());
         JpegSender {
             queue,
             alive,
             quality,
+            pending_profile,
             last_sent: Instant::now() - Duration::from_secs(1),
             last_keyframe: Instant::now() - Duration::from_secs(60),
             fw: 0,
@@ -294,6 +306,17 @@ impl FrameSink for JpegSender {
         }
         if bgra.len() < (width as usize * height as usize * 4) {
             return;
+        }
+
+        // Cambio de perfil pedido desde la UI: recalcula jpeg/escala/fps y, si
+        // el camino de celdas esta activo, pone fw/fh a 0 para que el bloque
+        // de abajo ("(Re)dimensionar la rejilla...") lo detecte como si
+        // hubiera cambiado la resolucion -> reconstruye la rejilla y fuerza
+        // una keyframe de frame completo con la calidad nueva.
+        if let Some(new_profile) = self.pending_profile.lock().unwrap().take() {
+            self.quality = jpeg_quality_for(&new_profile);
+            self.fw = 0;
+            self.fh = 0;
         }
 
         // ---- MJPEG de frame completo (celdas desactivadas, o perfil con escala) ----
@@ -530,8 +553,12 @@ fn spawn_frame_writer(
     queue: Arc<FrameQueue>,
     alive: Arc<AtomicBool>,
     target_bitrate: Arc<AtomicU32>,
-    bitrate_min: u32,
-    bitrate_max: u32,
+    // Arc en vez de u32 fijo: si el perfil cambia a media sesion (ver
+    // `pending_profile` en H264Sender) el rango de bitrate valido cambia con
+    // el, y este hilo (que corre por su cuenta, sin volver a arrancar) tiene
+    // que enterarse sin que se le reconstruya.
+    bitrate_min: Arc<AtomicU32>,
+    bitrate_max: Arc<AtomicU32>,
 ) {
     std::thread::Builder::new()
         .name("otis-frame-writer".into())
@@ -572,7 +599,9 @@ fn spawn_frame_writer(
                         } else {
                             cur
                         };
-                        target_bitrate.store(next.clamp(bitrate_min, bitrate_max), Ordering::Relaxed);
+                        let lo = bitrate_min.load(Ordering::Relaxed);
+                        let hi = bitrate_max.load(Ordering::Relaxed);
+                        target_bitrate.store(next.clamp(lo, hi), Ordering::Relaxed);
                     }
                     last_tick = Instant::now();
                 }
@@ -592,31 +621,37 @@ struct VideoQuality {
 
 fn video_quality_for(profile: &str) -> VideoQuality {
     match profile {
+        // Techos subidos con margen moderado (antes 1/3/8 Mbps): el bitrate
+        // ADAPTATIVO (ver spawn_frame_writer) solo sube de verdad si la red
+        // aguanta -- estos numeros son el limite que le damos para trabajar,
+        // no lo que va a usar siempre. Con una conexion floja, el propio
+        // adaptativo lo baja solo en ~1.5s sin tocar nada aca.
         "sharp" => VideoQuality {
             scale: 1,
             fps: 30,
             min_interval: Duration::from_millis(33),
-            bitrate_min: 1_000_000,
-            bitrate_start: 3_000_000,
-            bitrate_max: 8_000_000,
+            bitrate_min: 1_500_000,
+            bitrate_start: 4_000_000,
+            bitrate_max: 14_000_000,
         },
         "balanced" => VideoQuality {
             scale: 1,
             fps: 30,
             min_interval: Duration::from_millis(33),
-            bitrate_min: 500_000,
-            bitrate_start: 1_800_000,
-            bitrate_max: 4_000_000,
+            bitrate_min: 700_000,
+            bitrate_start: 2_200_000,
+            bitrate_max: 6_500_000,
         },
         // ultraligero: media resolucion, algo menos de fps, bitrate bajo — pensado
-        // para redes flojas y CPUs de gama baja.
+        // para redes flojas y CPUs de gama baja. Subida chica a proposito: este
+        // perfil es justo el que NO queremos arriesgar en una red mala.
         _ => VideoQuality {
             scale: 2,
             fps: 24,
             min_interval: Duration::from_millis(42),
-            bitrate_min: 200_000,
-            bitrate_start: 700_000,
-            bitrate_max: 1_500_000,
+            bitrate_min: 250_000,
+            bitrate_start: 800_000,
+            bitrate_max: 2_000_000,
         },
     }
 }
@@ -629,8 +664,15 @@ struct H264Sender {
     alive: Arc<AtomicBool>,
     force_keyframe: Arc<AtomicBool>,
     target_bitrate: Arc<AtomicU32>,
+    bitrate_min: Arc<AtomicU32>,
+    bitrate_max: Arc<AtomicU32>,
     current_bitrate: u32,
     quality: VideoQuality,
+    // Perfil pedido desde la UI durante la sesion (boton "Calidad" del
+    // visor -> mensaje "set_profile" -> lo deja aca `handle_incoming`). Se
+    // consume una vez, en el siguiente `on_frame`, para no romper el
+    // encoder a mitad de un frame.
+    pending_profile: Arc<Mutex<Option<String>>>,
     encoder: Option<crate::h264enc::H264Encoder>,
     canvas: Vec<u8>,
     canvas_w: u32,
@@ -653,17 +695,25 @@ unsafe impl Send for H264Sender {}
 
 #[cfg(windows)]
 impl H264Sender {
-    fn new(stream: TcpStream, profile: &str, alive: Arc<AtomicBool>, force_keyframe: Arc<AtomicBool>) -> Self {
+    fn new(
+        stream: TcpStream,
+        profile: &str,
+        alive: Arc<AtomicBool>,
+        force_keyframe: Arc<AtomicBool>,
+        pending_profile: Arc<Mutex<Option<String>>>,
+    ) -> Self {
         let quality = video_quality_for(profile);
         let queue = FrameQueue::new();
         let target_bitrate = Arc::new(AtomicU32::new(quality.bitrate_start));
+        let bitrate_min = Arc::new(AtomicU32::new(quality.bitrate_min));
+        let bitrate_max = Arc::new(AtomicU32::new(quality.bitrate_max));
         spawn_frame_writer(
             stream,
             queue.clone(),
             alive.clone(),
             target_bitrate.clone(),
-            quality.bitrate_min,
-            quality.bitrate_max,
+            bitrate_min.clone(),
+            bitrate_max.clone(),
         );
         H264Sender {
             queue,
@@ -671,7 +721,10 @@ impl H264Sender {
             force_keyframe,
             current_bitrate: quality.bitrate_start,
             target_bitrate,
+            bitrate_min,
+            bitrate_max,
             quality,
+            pending_profile,
             encoder: None,
             canvas: Vec::new(),
             canvas_w: 0,
@@ -691,6 +744,21 @@ impl FrameSink for H264Sender {
         }
         if bgra.len() < (width as usize * height as usize * 4) {
             return;
+        }
+
+        // Cambio de perfil pedido desde la UI a mitad de sesion: se recalcula
+        // la calidad, se tiran encoder+lienzo (se recrean abajo, en el mismo
+        // `need_full_repaint` que ya usa el cambio de resolucion) y se fuerza
+        // una keyframe para que el visor no arrastre bloques del bitrate viejo.
+        if let Some(new_profile) = self.pending_profile.lock().unwrap().take() {
+            let nq = video_quality_for(&new_profile);
+            self.bitrate_min.store(nq.bitrate_min, Ordering::Relaxed);
+            self.bitrate_max.store(nq.bitrate_max, Ordering::Relaxed);
+            self.current_bitrate = nq.bitrate_start;
+            self.target_bitrate.store(nq.bitrate_start, Ordering::Relaxed);
+            self.quality = nq;
+            self.encoder = None;
+            self.force_keyframe.store(true, Ordering::SeqCst);
         }
 
         let want_keyframe_now = self.force_keyframe.swap(false, Ordering::AcqRel);
@@ -786,14 +854,15 @@ fn make_video_sink(
     profile: &str,
     alive: Arc<AtomicBool>,
     #[allow(unused_variables)] force_keyframe: Arc<AtomicBool>,
+    pending_profile: Arc<Mutex<Option<String>>>,
 ) -> Box<dyn FrameSink> {
     #[cfg(windows)]
     {
         if USE_H264 && crate::h264enc::is_available() {
-            return Box::new(H264Sender::new(stream, profile, alive, force_keyframe));
+            return Box::new(H264Sender::new(stream, profile, alive, force_keyframe, pending_profile));
         }
     }
-    Box::new(JpegSender::new(stream, jpeg_quality_for(profile), alive))
+    Box::new(JpegSender::new(stream, jpeg_quality_for(profile), alive, pending_profile))
 }
 
 // ---- Sink local: emite cada frame al PROPIO WebView (para reenviar por WebRTC).
@@ -1036,7 +1105,26 @@ impl Transport {
             // El visor abre el canal de video y, justo despues, el de entrada
             // (ver `connect`): lo esperamos con un plazo corto.
             let input_stream = match accept_with_timeout(&input_listener, Duration::from_secs(5)) {
-                Some(s) => s,
+                Some(s) => {
+                    // BUG real (no de esta sesion): en Windows, un socket
+                    // aceptado desde un listener no-bloqueante HEREDA ese modo
+                    // no-bloqueante. `input_listener` se puso en no-bloqueante
+                    // arriba solo para poder sondearlo con timeout -- pero el
+                    // resto de `handle_incoming` (negotiate_profile, el bucle
+                    // de entrada) asume lectura BLOQUEANTE. Sin este reset, la
+                    // primera vez que no hay bytes ya esperando en el buffer
+                    // del socket, `read_exact` revienta con WouldBlock (10035)
+                    // en vez de esperar -- la sesion se abre y se cierra sola
+                    // al instante (justo el sintoma reproducido probando en
+                    // loopback: negotiate_profile() SI lee bien el "hello"
+                    // porque para entonces ya habia datos en el buffer, pero
+                    // la siguiente lectura del bucle de abajo, con el visor
+                    // sin mandar nada todavia, revienta en el acto).
+                    if let Err(e) = s.set_nonblocking(false) {
+                        eprintln!("[host] no se pudo volver a modo bloqueante el canal de entrada: {e}");
+                    }
+                    s
+                }
                 None => {
                     eprintln!("[host] el visor no abrio el canal de entrada a tiempo");
                     let _ = video_stream.shutdown(std::net::Shutdown::Both);
@@ -1123,7 +1211,18 @@ impl Transport {
 
         let alive = Arc::new(AtomicBool::new(true));
         let force_keyframe = Arc::new(AtomicBool::new(false));
-        let sink = make_video_sink(video_stream, &profile, alive.clone(), force_keyframe.clone());
+        // Buzon de un solo hueco para el cambio de perfil en vivo: el bucle de
+        // abajo (hilo de entrada) escribe aca cuando llega "set_profile", y el
+        // sink lo consume en su propio hilo de captura -- así no hay que tocar
+        // el encoder desde dos hilos a la vez.
+        let pending_profile: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let sink = make_video_sink(
+            video_stream,
+            &profile,
+            alive.clone(),
+            force_keyframe.clone(),
+            pending_profile.clone(),
+        );
 
         // Reinicia la captura y la arranca alimentando el sink.
         capture.stop();
@@ -1144,6 +1243,8 @@ impl Transport {
                 Ok((MSG_INPUT, payload)) => {
                     if is_keyframe_request(&payload) {
                         force_keyframe.store(true, Ordering::SeqCst);
+                    } else if let Some(new_profile) = parse_set_profile(&payload) {
+                        *pending_profile.lock().unwrap() = Some(new_profile);
                     } else {
                         apply_input(&payload);
                     }
@@ -1304,6 +1405,17 @@ fn is_keyframe_request(payload: &[u8]) -> bool {
         .ok()
         .and_then(|v| v.get("t").and_then(|t| t.as_str()).map(|s| s == "keyframe_request"))
         .unwrap_or(false)
+}
+
+/// Detecta un mensaje `{"t":"set_profile","profile":"balanced"}` (boton de
+/// calidad de la barra de sesion, enviado por el visor en caliente por el
+/// mismo canal de entrada que raton/teclado). `None` si no es ese mensaje.
+fn parse_set_profile(payload: &[u8]) -> Option<String> {
+    let v: Value = serde_json::from_slice(payload).ok()?;
+    if v.get("t").and_then(|t| t.as_str()) != Some("set_profile") {
+        return None;
+    }
+    v.get("profile").and_then(|p| p.as_str()).map(String::from)
 }
 
 /// Aplica un evento de entrada recibido (JSON) inyectandolo localmente.
