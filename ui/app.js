@@ -36,6 +36,24 @@
     toastTimer = setTimeout(() => el.classList.remove("show"), 1600);
   }
 
+  // Sonido de conexion: suena en las DOS puntas (quien la manda y quien la
+  // recibe), ver los dos puntos donde se llama mas abajo. `currentTime = 0`
+  // primero por si sonara de nuevo antes de terminar (conectar/reconectar
+  // rapido) -- que arranque de cero, no que se pise con la cola de antes.
+  // Los navegadores bloquean el autoplay CON SONIDO si el usuario nunca
+  // interactuo con la pagina; para cuando esto suena ya hubo al menos un
+  // clic (en "Conectar", o el propio arranque de una sesion entrante), asi
+  // que no deberia toparse con eso -- igual el catch es silencioso por las
+  // dudas (mejor sesion sin sonido que un error en consola).
+  function playConnectSound() {
+    const el = $("connect-sound");
+    if (!el) return;
+    try {
+      el.currentTime = 0;
+      el.play().catch(() => {});
+    } catch (_) {}
+  }
+
   // ---- Autorizacion de conexiones entrantes --------------------------------
   // Se usa tanto para LAN como para P2P: muestra el dialogo, cuenta 19s y
   // devuelve una Promise<boolean> con la decision (o rechazo por timeout).
@@ -95,6 +113,7 @@
     hostBarMode = mode;
     hostBarText.textContent = peer ? `Te está controlando ${groupId(peer)}` : "Te están controlando";
     hostBar.classList.remove("hidden");
+    playConnectSound(); // lado host: suena al aceptar la conexion entrante
   }
   function hideHostBar() {
     hostBarMode = null;
@@ -507,6 +526,7 @@
       setQualityLabel(profile || "ultralight");
       $("sb-input").textContent = "Control: on";
       showBar(); // cada sesion nueva arranca con la barra visible
+      playConnectSound(); // lado visor: suena al mandar la conexion
       startTs = Date.now();
       clearInterval(timerId);
       timerId = setInterval(() => {
@@ -1174,6 +1194,33 @@
     });
   }
 
+  // ---- Arranque automatico con Windows ------------------------------------
+  const autostartBtn = $("autostart-toggle");
+  function paintAutostart(enabled) {
+    if (!autostartBtn) return;
+    autostartBtn.textContent = enabled ? "Activado" : "Desactivado";
+    autostartBtn.classList.toggle("btn-primary", enabled);
+    autostartBtn.classList.toggle("btn-secondary", !enabled);
+  }
+  if (autostartBtn) {
+    invoke("autostart_status").then(paintAutostart).catch(() => {
+      autostartBtn.textContent = "No disponible";
+      autostartBtn.disabled = true;
+    });
+    autostartBtn.addEventListener("click", async () => {
+      const goingTo = autostartBtn.textContent !== "Activado";
+      autostartBtn.disabled = true;
+      try {
+        await invoke("autostart_set", { enabled: goingTo });
+        paintAutostart(goingTo);
+        toast(goingTo ? "Se abrirá sola al iniciar Windows" : "Ya no se abre sola al iniciar Windows");
+      } catch (e) {
+        toast("No se pudo cambiar: " + e);
+      }
+      autostartBtn.disabled = false;
+    });
+  }
+
   // ---- Controles de ventana ----------------------------------------------
   if (currentWindow) {
     $("win-min").addEventListener("click", () => currentWindow.minimize());
@@ -1187,6 +1234,13 @@
   refreshMetrics();
   Devices.renderAll();
   updateNetModeLabel();
+  // Apaga los atajos de WebView2 (F5 recargar, F11 pantalla completa, F12
+  // DevTools...) para que el canvas de la sesion reciba F1..F12 igual que
+  // cualquier otra tecla, en vez de que el navegador se las coma antes de
+  // llegar al keydown. Se llama desde aca (pagina ya cargada, no desde
+  // setup() en Rust) para que el WebView2 este garantizado listo -- ver el
+  // comentario en disable_browser_accelerator_keys, main.rs.
+  invoke("disable_browser_accelerator_keys").catch(() => {});
   // Metricas cada 2s (barato en equipos lentos, solo refresca el propio proceso).
   setInterval(refreshMetrics, 2000);
 })();

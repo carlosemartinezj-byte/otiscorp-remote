@@ -163,6 +163,18 @@
         </div>
         <div class="blueprint panel" style="max-width:640px;margin-top:16px">
           <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div class="k">Arranque automatico</div>
+          <p class="muted" style="font-size:12.5px;margin:0">
+            Para que el acceso desatendido sirva de verdad, la app tiene que estar
+            corriendo despues de que la PC se reinicie sola (un corte de luz, una
+            actualizacion de Windows...) sin que nadie la abra a mano.
+          </p>
+          <div style="display:flex;align-items:center;gap:12px;margin-top:10px">
+            <button class="btn btn-secondary" id="autostart-toggle" type="button">Cargando…</button>
+          </div>
+        </div>
+        <div class="blueprint panel" style="max-width:640px;margin-top:16px">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
           <div class="k">Acerca de</div>
           <p class="muted" style="font-size:12.5px;margin:0">
             OtisCorp Remote — hecho por
@@ -214,6 +226,13 @@
   </div>
 
   <div class="toast" id="toast"></div>
+
+  <!-- Sonido de conexion: suena en las DOS puntas (quien manda la conexion
+       y quien la recibe), ver "Arranque automatico" -- src/app.js. Recortado
+       a 2 min para que no pese (ver ui/sounds/connect.mp3). preload="auto"
+       para que ya este listo la primera vez que haga falta, sin el
+       tartamudeo de arrancar a bajar el archivo justo al conectar. -->
+  <audio id="connect-sound" src="sounds/connect.mp3" preload="auto"></audio>
 
   <!-- Overlay de actualizacion: se muestra mientras se descarga e instala una
        version nueva (la app se reinicia sola al terminar). -->

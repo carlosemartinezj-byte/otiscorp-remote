@@ -20,6 +20,15 @@ pub struct Identity {
     pub unattended: bool,
     /// Marca de tiempo (epoch, s) de creacion.
     pub created_at: u64,
+    /// Si ya se intento prender el arranque automatico con Windows al menos
+    /// una vez. `#[serde(default)]` para que un identity.json viejo (de
+    /// antes de que existiera este campo) tambien caiga en `false` -- asi
+    /// los equipos que ya estaban usando la app tambien reciben el prendido
+    /// automatico UNA vez al actualizar, no solo las instalaciones nuevas.
+    /// Despues de esa vez nunca mas se toca solo: si el usuario lo apaga a
+    /// mano desde Ajustes, se queda apagado para siempre (ver main.rs).
+    #[serde(default)]
+    pub autostart_initialized: bool,
 }
 
 impl Identity {
@@ -29,6 +38,7 @@ impl Identity {
             device_name,
             unattended: true,
             created_at: now_secs(),
+            autostart_initialized: false,
         }
     }
 }

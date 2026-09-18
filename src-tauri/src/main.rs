@@ -216,10 +216,71 @@ fn scan_network() -> Vec<netscan::NetDevice> {
     netscan::scan()
 }
 
+/// Apaga los atajos de teclado que WebView2 se reserva para si mismo (F3
+/// buscar, F5 recargar, F6/F10 barra de menu, F11 pantalla completa, F12
+/// DevTools, Ctrl+F, Ctrl+P...): los intercepta ANTES de que lleguen al
+/// keydown de la pagina, asi que aunque el JS haga preventDefault() nunca
+/// los ve para reenviarlos al equipo remoto.
+///
+/// A proposito NO se llama desde `setup()`: ahi el bucle de eventos de la
+/// ventana todavia no arranco, y `with_webview` necesita que ese bucle este
+/// vivo para poder despachar el closure al hilo principal -- llamarlo
+/// demasiado temprano dejaba el WebView2 colgado sin pintar nunca (se probo
+/// y rompia la ventana). El frontend llama este comando por su cuenta, una
+/// vez que la pagina ya cargo (ver ui/app.js) -- en ese punto el WebView2
+/// esta garantizado vivo porque es literalmente el que esta corriendo el JS
+/// que hizo la llamada.
+#[tauri::command]
+fn disable_browser_accelerator_keys(window: tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        window
+            .with_webview(|webview| {
+                unsafe {
+                    if let Ok(core) = webview.controller().CoreWebView2() {
+                        if let Ok(settings) = core.Settings() {
+                            // AreBrowserAcceleratorKeysEnabled vive en la
+                            // interfaz derivada Settings3, no en la base.
+                            use windows_core::Interface as _;
+                            if let Ok(settings3) = settings.cast::<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3>() {
+                                let _ = settings3.SetAreBrowserAcceleratorKeysEnabled(false);
+                            }
+                        }
+                    }
+                }
+            })
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+    }
+    Ok(())
+}
+
+/// Estado actual del arranque automatico (para pintar el toggle en Ajustes).
+#[tauri::command]
+fn autostart_status(app: tauri::AppHandle) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+/// Prende/apaga el arranque automatico a mano, desde el toggle de Ajustes.
+#[tauri::command]
+fn autostart_set(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let mgr = app.autolaunch();
+    if enabled { mgr.enable() } else { mgr.disable() }.map_err(|e| e.to_string())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
             let app_data_dir = app
                 .path()
@@ -227,8 +288,26 @@ fn main() {
                 .unwrap_or_else(|_| PathBuf::from("."));
 
             let default_name = sysinfo::System::host_name().unwrap_or_else(|| "Mi PC".to_string());
-            let identity = identity::load_or_create(&app_data_dir, default_name);
+            let mut identity = identity::load_or_create(&app_data_dir, default_name);
             let session_password = identity::generate_session_password();
+
+            // Prende el arranque automatico UNA sola vez (primera vez que
+            // corre esta version, sea instalacion nueva o actualizacion de
+            // una vieja): el acceso desatendido no sirve de nada si hay que
+            // abrir la app a mano cada vez que la PC se reinicia sola. Si
+            // falla (raro, algun problema de registro) no se marca como
+            // hecho, para reintentar en el proximo arranque. Si el usuario
+            // lo apaga despues desde Ajustes, el flag ya queda en true y
+            // esto nunca mas lo vuelve a tocar.
+            if !identity.autostart_initialized {
+                use tauri_plugin_autostart::ManagerExt;
+                if app.autolaunch().enable().is_ok() {
+                    identity.autostart_initialized = true;
+                    identity::save(&app_data_dir, &identity);
+                }
+            }
+
+            let identity = identity;
 
             let capture = Arc::new(CaptureEngine::new());
             let transport = Arc::new(Transport::new());
@@ -269,7 +348,10 @@ fn main() {
             request_remote_keyframe,
             start_sharing,
             stop_sharing,
-            scan_network
+            scan_network,
+            disable_browser_accelerator_keys,
+            autostart_status,
+            autostart_set
         ])
         .run(tauri::generate_context!())
         .expect("error al arrancar OtisCorp Remote");

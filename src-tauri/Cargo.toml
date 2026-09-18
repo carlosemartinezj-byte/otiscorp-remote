@@ -1,6 +1,6 @@
 [package]
 name = "otiscorp-remote"
-version = "2.9.12"
+version = "2.9.13"
 description = "OtisCorp Remote — cliente de escritorio remoto ligero"
 authors = ["OtisCorp"]
 edition = "2021"
@@ -13,6 +13,11 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# Arranque automatico con Windows (acceso desatendido de verdad: si la PC se
+# reinicia sola, la app tiene que estar corriendo para poder conectarse sin
+# que alguien la abra a mano). Se registra en el Run key de Windows, no
+# requiere permisos de administrador.
+tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }
@@ -28,6 +33,16 @@ webpki-roots = "0.26"
 
 [target.'cfg(windows)'.dependencies]
 windows-registry = "0.3"
+# Solo para apagar los atajos de teclado que WebView2 se reserva (ver
+# disable_browser_accelerator_keys en main.rs). Ya es dependencia transitiva
+# de tauri (via wry) -- se declara aqui para llamar directo a
+# ICoreWebView2Controller/Settings.
+webview2-com = "0.38"
+# El trait Interface (de aqui sale `.cast()`) -- misma version 0.61 que usa
+# webview2-com por debajo. Version de windows-core distinta a la de
+# `windows = "0.58"` de abajo; conviven sin chocar, cada una en su propio
+# nodo del grafo de dependencias.
+windows-core = "0.61"
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dxgi",
